@@ -1,0 +1,23 @@
+{
+  "name": "pao-companion",
+  "version": "0.1.0",
+  "description": "An original desktop pixel companion (Comnyang-inspired) built with Electron + TypeScript + Canvas.",
+  "main": "dist/main.js",
+  "scripts": {
+    "gen:sprites": "python tools/gen_companion.py",
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "dev": "node build.mjs --watch",
+    "test": "node scripts/run-tests.mjs"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.5.0"
+  },
+  "optionalDependencies": {
+    "uiohook-napi": "^1.5.4"
+  }
+}

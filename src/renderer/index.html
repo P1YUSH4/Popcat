@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Pao</title>
+  <style>
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: transparent;
+      cursor: default; user-select: none;
+    }
+    #stage {
+      position: fixed; inset: 0;
+      image-rendering: pixelated;            /* nearest-neighbor scaling */
+      image-rendering: crisp-edges;
+    }
+    .bubble {
+      position: fixed; transform: translate(-50%, -100%);
+      background: #f0f4f6; color: #2b263a; border: 2px solid #2b263a;
+      border-radius: 8px; padding: 4px 8px; font: 12px ui-monospace, monospace;
+      white-space: nowrap; pointer-events: none;
+    }
+    .timer-chip {
+      position: fixed; transform: translate(-50%, -100%);
+      display: none; align-items: center; gap: 6px;
+      background: #2b263a; color: #fff; border: 2px solid #f0f4f6;
+      border-radius: 10px; padding: 2px 4px 2px 7px;
+      font: 11px ui-monospace, monospace; white-space: nowrap;
+      pointer-events: none;
+    }
+    .timer-chip .x {
+      cursor: pointer; pointer-events: auto; color: #ffb3b3;
+      font-weight: bold; padding: 0 3px; border-radius: 6px;
+    }
+    .timer-chip .x:hover { background: #4a4368; color: #fff; }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <script src="renderer.js"></script>
+</body>
+</html>
