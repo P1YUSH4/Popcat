@@ -45,6 +45,55 @@ Main process (`src/main/main.ts`) owns the transparent overlay window, polls the
 global cursor via `electron.screen` (no native deps), toggles click-through from
 the cat hitbox, and — if `uiohook-napi` is installed — forwards global keystrokes.
 
+## Ambient perception & mood (100% local, no screenshots)
+
+Pao reads your **rhythm**, not your **screen**. There are no screenshots, no
+pixel reads, no content capture — just cheap behavioural signals aggregated
+locally into a small feature vector that drives a mood:
+
+| Sense | Source |
+|---|---|
+| typing cadence / bursts | global keyboard hook (already used for reactions) |
+| scroll & cursor energy | global hooks |
+| idle / away / return | cursor + activity tracking |
+| active **app title** (never content) | a long-lived PowerShell Win32 watcher (Windows; optional) |
+| time of day / session length | local clock |
+
+`Perception` builds the feature vector; `Affect` turns it into a continuous
+**energy** level and a discrete **rhythm state** —
+`AWAY · IDLE · FOCUSED · FLOW · SCATTERED · FATIGUED · WINDING_DOWN`. Pao then
+*behaves* (it never advises): welcomes you back after you've been away, gets
+restless when you window-hop, suggests a stretch deep in a flow streak, and
+dozes off sooner when energy is low (late night / long marathon). The
+classifier and energy model are pure functions with unit tests
+(`tests/affect.test.ts`).
+
+Inspect it live:
+
+```bash
+curl http://127.0.0.1:39127/state      # { rhythm, mood, energy, activeApp, ... }
+```
+
+…or `cat.affect()` in the renderer devtools.
+
+## Play & personality (no AI)
+
+| Feature | What it does |
+|---|---|
+| **Throw & bounce** | Fling Pao by releasing a drag with speed — it arcs under gravity, bounces off the screen edges (squash + thud), then shakes it off and sits. |
+| **App-aware moods** | Pao's idle fidgets are flavoured by your active app category (editor → stretches, terminal → curious/alert, browser → watches along, media → relaxed, game → excited). Title-only, no content. |
+| **Streaks & achievements** | A deterministic reward loop on the rhythm engine — first focus, flow, marathon, night-owl/early-bird, daily-return streaks (3/7/14/30). Unlocks pop a celebration + jingle; progress persists in `localStorage`. |
+| **Coat colours** | Palette-swap the cat (Ginger, Charcoal, Russian Blue, Cream, Rose) — an exact recolour of the fur pixels, outline/eyes kept. Tray → *Coat colour*; persists across restarts. |
+
+Drive them from the tray, devtools (`cat.setCoat("ginger")`, `cat.achievements()`),
+or the control server:
+
+```bash
+curl "http://127.0.0.1:39127/coat?name=ginger"
+curl  http://127.0.0.1:39127/throw      # demo toss
+curl  http://127.0.0.1:39127/state      # includes { context, achievements } now
+```
+
 ## Behaviors (exact Comnyang mapping)
 
 | User event | Reaction | State → animation |

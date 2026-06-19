@@ -69,6 +69,8 @@ export class InputController {
   }
 
   isTyping(): boolean { return this.keyEnergy > 0.4; }
+  /** keystrokes counted in the last ~1s (typing cadence for the affect engine). */
+  keysPerSec(): number { return this.keyTimes.length; }
   /** Sustained burst of keystrokes -> overheat. */
   isTypingFast(threshold = 7): boolean { return this.keyTimes.length >= threshold; }
   isCursorFast(threshold = 700): boolean { return this.cursorSpeed > threshold; }

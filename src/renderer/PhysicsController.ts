@@ -20,6 +20,11 @@ export class PhysicsController {
   mode: "spring" | "follow" | "ballistic" = "spring";
   followK = 0.08;     // per-frame lerp factor at 60fps (walk 0.08 / hunt 0.18)
 
+  // ballistic (throw) tunables + bounce notification
+  private ballisticG = 0;          // gravity px/s^2 while thrown (0 = flat slide)
+  restitution = 0.55;              // edge bounciness 0..1
+  onBounce: ((strength: number) => void) | null = null;  // fired on each wall hit
+
   setBounds(w: number, h: number): void {
     this.bounds = { minX: 40, minY: 40, maxX: w - 40, maxY: h - 40 };
   }
@@ -46,8 +51,8 @@ export class PhysicsController {
   /** lerp-follow mode (walk/hunt). k = per-frame factor @60fps. */
   follow(k: number): void { this.mode = "follow"; this.followK = k; }
   spring(): void { this.mode = "spring"; }
-  /** throw with an initial velocity; decelerates by friction until slow. */
-  fling(vel: Vec2): void { this.mode = "ballistic"; this.vel = { ...vel }; }
+  /** throw with an initial velocity; gravity>0 makes it arc + bounce off edges. */
+  fling(vel: Vec2, gravity = 0): void { this.mode = "ballistic"; this.vel = { ...vel }; this.ballisticG = gravity; }
 
   update(dt: number): void {
     if (this.mode === "follow") {
@@ -60,10 +65,13 @@ export class PhysicsController {
       return;
     }
     if (this.mode === "ballistic") {
+      if (this.ballisticG) this.vel.y += this.ballisticG * dt;        // thrown: gravity
       this.pos.x += this.vel.x * dt; this.pos.y += this.vel.y * dt;
-      const f = Math.pow(0.12, dt);
-      this.vel.x *= f; this.vel.y *= f;
-      this.clampBounds();
+      // light air drag thrown (keep the arc); heavy drag for a flat slide
+      const f = Math.pow(this.ballisticG ? 0.45 : 0.12, dt);
+      this.vel.x *= f;
+      if (!this.ballisticG) this.vel.y *= f;
+      this.bounceBounds();
       return;
     }
     // critically-damped-ish spring: a = k*(target-pos) - c*vel
@@ -91,9 +99,25 @@ export class PhysicsController {
     if (this.pos.y > this.bounds.maxY) { this.pos.y = this.bounds.maxY; this.vel.y = Math.min(0, this.vel.y); }
   }
 
+  /** like clampBounds, but reflects velocity (with restitution) and reports the
+   *  impact so the cat can squash + thud. Used in ballistic/throw mode. */
+  private bounceBounds(): void {
+    const R = this.restitution;
+    let hit = 0;
+    if (this.pos.x < this.bounds.minX && this.vel.x < 0) { this.pos.x = this.bounds.minX; hit = Math.max(hit, -this.vel.x); this.vel.x = -this.vel.x * R; }
+    if (this.pos.x > this.bounds.maxX && this.vel.x > 0) { this.pos.x = this.bounds.maxX; hit = Math.max(hit, this.vel.x); this.vel.x = -this.vel.x * R; }
+    if (this.pos.y < this.bounds.minY && this.vel.y < 0) { this.pos.y = this.bounds.minY; hit = Math.max(hit, -this.vel.y); this.vel.y = -this.vel.y * R; }
+    if (this.pos.y > this.bounds.maxY && this.vel.y > 0) { this.pos.y = this.bounds.maxY; hit = Math.max(hit, this.vel.y); this.vel.y = -this.vel.y * R; }
+    if (hit > 60 && this.onBounce) this.onBounce(Math.min(1, hit / 900));
+  }
+
   speed(): number { return Math.hypot(this.vel.x, this.vel.y); }
   arrived(eps = 6): boolean {
     return Math.hypot(this.target.x - this.pos.x, this.target.y - this.pos.y) < eps;
+  }
+  /** thrown cat has settled: slow and resting on the floor (bottom edge). */
+  restingOnFloor(): boolean {
+    return this.speed() < 45 && this.pos.y >= this.bounds.maxY - 3;
   }
 }
 

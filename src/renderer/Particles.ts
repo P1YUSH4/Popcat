@@ -40,6 +40,18 @@ export class Particles {
     }
   }
 
+  /** bounding box of all live particles (screen px) + margin, or null if none.
+   *  The renderer folds this into its clear region so particles never smear. */
+  bounds(margin = 16): { x: number; y: number; w: number; h: number } | null {
+    if (!this.ps.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of this.ps) {
+      if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    }
+    return { x: minX - margin, y: minY - margin, w: maxX - minX + margin * 2, h: maxY - minY + margin * 2 };
+  }
+
   update(dt: number): void {
     for (let i = this.ps.length - 1; i >= 0; i--) {
       const p = this.ps[i];

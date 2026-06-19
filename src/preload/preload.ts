@@ -13,6 +13,11 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.on("key-activity", () => cb()),
   onScrollActivity: (cb: (rot: number) => void) =>
     ipcRenderer.on("scroll-activity", (_e, rot: number) => cb(rot)),
+  // foreground-window title changes (ambient perception; optional)
+  onAppFocus: (cb: (title: string) => void) =>
+    ipcRenderer.on("app-focus", (_e, title: string) => cb(title)),
+  // mood/perception snapshot -> main (served on the local control port)
+  reportState: (s: unknown) => ipcRenderer.send("affect-state", s),
   setHitbox: (box: { x: number; y: number; w: number; h: number }) =>
     ipcRenderer.send("hitbox", box),
   setDragging: (v: boolean) => ipcRenderer.send("dragging", v),
@@ -27,6 +32,14 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.on("set-pomodoro", (_e, cfg: PomodoroCfg) => cb(cfg)),
   onSetMeeting: (cb: (cfg: MeetingCfg) => void) =>
     ipcRenderer.on("set-meeting", (_e, cfg: MeetingCfg) => cb(cfg)),
+  // settings window -> main -> overlay: name the pet
+  setName: (name: string) => ipcRenderer.send("ui-name", name),
+  onSetName: (cb: (name: string) => void) =>
+    ipcRenderer.on("apply-name", (_e, name: string) => cb(name)),
+  // settings window: choose a coat + read live status (coats, mood, trophies)
+  setCoat: (name: string) => ipcRenderer.send("ui-coat", name),
+  setAccessory: (name: string) => ipcRenderer.send("ui-accessory", name),
+  getStatus: () => ipcRenderer.invoke("get-status"),
 });
 
 export interface PomodoroCfg { focus: number; brk: number; long: number; every: number; start?: boolean; }

@@ -1,6 +1,7 @@
 import type { AnimationController } from "./AnimationController";
 import type { InputController } from "./InputController";
 import type { PhysicsController } from "./PhysicsController";
+import type { AppCategory } from "./Perception";
 import { StateMachine, type State } from "./StateMachine";
 import { sound } from "./Sound";
 import { advancePomo, isDue, reminderDue } from "./timers";
@@ -50,6 +51,16 @@ export class BehaviorController {
   headR = 36;    // head radius in screen px for the petting zone (set by Cat)
   hoverHalfW = 36;   // body hover-box half-width in screen px (set by Cat)
   hoverHeight = 110; // body hover-box height above the feet in screen px (set by Cat)
+
+  // app-aware mood: set by the AffectController from the active window category
+  contextCategory: AppCategory = "other";
+  // optional user-given name, used in greetings
+  petName = "";
+  // set true by the affect engine during deep focus/flow -> the cat stays calm
+  // and doesn't fidget, so it never interrupts your concentration
+  quietMode = false;
+  // throw/fling: true while the cat is airborne after being thrown
+  private thrown = false;
 
   // auto-behaviors: sleep on long inactivity + occasional idle fidgets
   private sleeping = false;
@@ -178,6 +189,25 @@ export class BehaviorController {
   }
   setAutonomous(on: boolean): void { this.autonomous = on; if (!on && !this.sm.locked) this.toIdle(); }
 
+  // ---- affect-driven expressions ---------------------------------------
+  // The AffectController calls these to give Pao gentle, mood-driven reactions.
+  // They only act when the cat is calmly idle so they NEVER cut off a real
+  // reaction (drag, hunt, pet, typing, a one-shot animation, sleep, …).
+  private affectIdle(): boolean {
+    return !this.sm.locked && !this.dragging && (this.sm.state === "SIT" || this.sm.state === "IDLE");
+  }
+  /** "welcome back" — a little stand-and-look plus a soft line. */
+  affectGreet(msg: string): void {
+    if (!this.affectIdle()) return;
+    this.say(msg, 2200);
+    this.fidgetIdleUntil = this.now + 1800;   // stand & look around briefly
+    this.nextFidgetAt = this.now + 12_000 + Math.random() * 16_000;
+  }
+  /** a kind nudge (stretch + message), e.g. deep-focus or long-session care. */
+  affectNudge(msg: string): void { if (this.affectIdle()) { this.doStretch(); this.say(msg, 2600); } }
+  /** restless little look-around when you're window-hopping. */
+  affectAntsy(): void { if (this.affectIdle()) this.oneShot("ALERT", "alert"); }
+
   // ---- drag + shake ----------------------------------------------------
   beginDrag(): void {
     this.dragging = true;
@@ -201,6 +231,22 @@ export class BehaviorController {
     else if (!on && this.sm.state !== "DRAG") { this.sm.transition("DRAG", { lock: true }); this.anim.play("walk", { force: true }); }
   }
 
+  /** Released a drag with speed -> throw the cat: it arcs under gravity and
+   *  bounces off the screen edges, then settles. (Cat.ts decides the velocity.) */
+  throwCat(vel: Vec2): void {
+    this.dragging = false;
+    this.thrown = true;
+    this.sm.unlock();
+    this.sm.transition("FALL", { lock: true });
+    this.anim.play("fall", { force: true });
+    this.phys.fling(vel, 2600);                 // gravity px/s^2
+  }
+  /** thrown cat has settled on the floor -> shake it off and sit. */
+  private land(): void {
+    this.phys.tune(120, 12);
+    this.oneShot("STRETCH", "stretch");
+  }
+
   // ---- per-frame brain --------------------------------------------------
   update(dt: number): void {
     this.now = performance.now();
@@ -213,6 +259,12 @@ export class BehaviorController {
 
     this.tickTimers();      // pomodoro phase changes + meeting reminder (may interrupt)
     this.tickReminders();
+
+    // thrown: stay in FALL (bouncing off walls) until it settles on the floor
+    if (this.thrown) {
+      if (this.phys.restingOnFloor()) { this.thrown = false; this.land(); }
+      else { this.sm.update(dt); this.syncAnim(); return; }
+    }
 
     if (this.sm.locked) { this.sm.update(dt); this.syncAnim(); return; }
 
@@ -270,12 +322,24 @@ export class BehaviorController {
     this.oneShot("STRETCH", "stretch");   // wake-up stretch -> SIT
   }
 
-  /** occasional small fidget so a sitting cat isn't perfectly static. */
+  /** occasional small fidget so a sitting cat isn't perfectly static — flavoured
+   *  by what you're doing (app category), with zero AI: just a mood mapping. */
   private tickFidget(): void {
     if (this.sm.state !== "SIT" || this.now < this.nextFidgetAt) return;
     this.nextFidgetAt = this.now + 12_000 + Math.random() * 16_000;
-    if (Math.random() < 0.5) this.fidgetIdleUntil = this.now + 2000;  // stand & look
-    else this.doStretch();                                            // quick stretch
+    if (this.quietMode) return;   // deep focus: stay still, don't distract
+    const look = () => { this.fidgetIdleUntil = this.now + 2000; };   // stand & look around
+    const r = Math.random();
+    switch (this.contextCategory) {
+      case "editor":   r < 0.6 ? this.doStretch() : look(); break;            // heads-down: stretches
+      case "terminal": r < 0.5 ? this.oneShot("ALERT", "alert") : look(); break; // curious/alert
+      case "browser":  look(); break;                                         // watches along with you
+      case "media":    r < 0.5 ? this.oneShot("YAWN", "yawn") : look(); break;   // relaxed
+      case "game":     r < 0.5 ? this.oneShot("JUMP", "jump") : this.doStretch(); break; // excited
+      case "chat":     r < 0.4 ? this.oneShot("ALERT", "alert") : look(); break;
+      case "design":   this.doStretch(); break;
+      default:         r < 0.5 ? look() : this.doStretch();
+    }
   }
 
   private syncAnim(): void { this.anim.play(STATE_ANIM[this.sm.state]); }

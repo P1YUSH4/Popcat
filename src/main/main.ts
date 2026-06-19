@@ -2,6 +2,9 @@ import { app, BrowserWindow, screen, ipcMain, Tray, Menu, protocol, net, nativeI
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer, type Server } from "node:http";
+import { spawn, type ChildProcess } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 // Allow timer-triggered WebAudio (reminder chimes) to play without a click.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
@@ -69,6 +72,63 @@ function createWindow() {
 
   startCursorLoop();
   startKeyboardHook();
+  startWindowWatch();
+}
+
+// ---- optional foreground-window watcher (ambient perception) -------------
+// Pao reads your *rhythm*, not your screen: this reports only the active
+// window's title (for app-switch frequency), never its contents. Windows-only,
+// dependency-free (a single long-lived PowerShell calling Win32). If it can't
+// start, perception simply runs without the app signal.
+let fgProc: ChildProcess | null = null;
+function startWindowWatch() {
+  let cmd: string, args: string[];
+  if (process.platform === "win32") {
+    const script = [
+      "$ErrorActionPreference='SilentlyContinue'",
+      "Add-Type @\"",
+      "using System;using System.Runtime.InteropServices;using System.Text;",
+      "public class Fg{",
+      " [DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();",
+      " [DllImport(\"user32.dll\")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);}",
+      "\"@",
+      "$last=''",
+      "while($true){",
+      " $h=[Fg]::GetForegroundWindow();$sb=New-Object System.Text.StringBuilder 512;",
+      " [void][Fg]::GetWindowText($h,$sb,512);$t=$sb.ToString();",
+      " if($t -ne $last){$last=$t;[Console]::Out.WriteLine($t)}",
+      " Start-Sleep -Milliseconds 2000}",
+    ].join("\n");
+    try {
+      const file = join(tmpdir(), "pao-fgwatch.ps1");
+      writeFileSync(file, script, "utf8");
+    } catch (e) { console.warn("[pao] window watcher failed:", (e as Error).message); return; }
+    cmd = "powershell";
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(tmpdir(), "pao-fgwatch.ps1")];
+  } else if (process.platform === "darwin") {
+    // macOS: poll the frontmost app name (needs Automation permission for
+    // System Events on first run). App name only — never window content.
+    const osa = "tell application \"System Events\" to get name of first application process whose frontmost is true";
+    cmd = "/bin/sh";
+    args = ["-c", `while true; do osascript -e '${osa}' 2>/dev/null; sleep 2; done`];
+  } else {
+    return;   // linux: no active-window watcher yet
+  }
+  try {
+    fgProc = spawn(cmd, args, { windowsHide: true });
+    let last = "";
+    fgProc.stdout?.setEncoding("utf8");
+    fgProc.stdout?.on("data", (chunk: string) => {
+      for (const line of chunk.split(/\r?\n/)) {
+        const t = line.trim();
+        if (t && t !== last) { last = t; win?.webContents.send("app-focus", t); }
+      }
+    });
+    fgProc.on("error", (e) => console.warn("[pao] window watcher unavailable:", e.message));
+    console.log(`[pao] foreground-window watcher active (${process.platform}; app/title only, never content)`);
+  } catch (e) {
+    console.warn("[pao] window watcher failed:", (e as Error).message);
+  }
 }
 
 // ---- global cursor polling (no native deps) -----------------------------
@@ -128,14 +188,21 @@ function startKeyboardHook() {
 // renderer pushes the cat hitbox every frame (throttled on its side)
 ipcMain.on("hitbox", (_e, box) => { hitbox = box; });
 ipcMain.on("dragging", (_e, v: boolean) => { draggingActive = v; });
+// renderer pushes its mood/perception snapshot; served on GET /state
+let latestState: unknown = null;
+ipcMain.on("affect-state", (_e, s) => { latestState = s; });
 // settings window -> overlay (custom pomodoro / meeting)
 ipcMain.on("set-pomodoro", (_e, cfg) => win?.webContents.send("set-pomodoro", cfg));
 ipcMain.on("set-meeting", (_e, cfg) => win?.webContents.send("set-meeting", cfg));
+ipcMain.on("ui-name", (_e, name: string) => win?.webContents.send("apply-name", name));
+ipcMain.on("ui-coat", (_e, name: string) => win?.webContents.send("do", `coat:${name}`));
+ipcMain.on("ui-accessory", (_e, name: string) => win?.webContents.send("do", `acc:${name}`));
+ipcMain.handle("get-status", () => latestState ?? {});
 
 function openSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
-    width: 320, height: 430, resizable: false, title: "Pao — Timers",
+    width: 340, height: 680, resizable: true, title: "Pao — Settings",
     skipTaskbar: false, alwaysOnTop: true, fullscreenable: false, minimizable: false,
     webPreferences: { preload: join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
   });
@@ -163,6 +230,30 @@ function createTray() {
       { label: "Worried (demo)", click: () => win?.webContents.send("do", "worried") },
       { label: "Hydration nudge", click: () => win?.webContents.send("do", "hydrate") },
       { type: "separator" },
+      {
+        label: "Coat colour",
+        submenu: [
+          { label: "Midnight (Jiji)", click: () => win?.webContents.send("do", "coat:default") },
+          { label: "Ash Grey", click: () => win?.webContents.send("do", "coat:ash") },
+          { label: "Warm Grey", click: () => win?.webContents.send("do", "coat:warmgrey") },
+          { label: "Caramel", click: () => win?.webContents.send("do", "coat:caramel") },
+          { label: "Slate Blue", click: () => win?.webContents.send("do", "coat:slate") },
+          { label: "Chocolate", click: () => win?.webContents.send("do", "coat:chocolate") },
+          { label: "Moss", click: () => win?.webContents.send("do", "coat:moss") },
+          { label: "Plum", click: () => win?.webContents.send("do", "coat:plum") },
+        ],
+      },
+      {
+        label: "Accessory",
+        submenu: [
+          { label: "None", click: () => win?.webContents.send("do", "acc:none") },
+          { label: "Pink Bow", click: () => win?.webContents.send("do", "acc:bow") },
+          { label: "Cozy Scarf", click: () => win?.webContents.send("do", "acc:scarf") },
+          { label: "Party Hat", click: () => win?.webContents.send("do", "acc:hat") },
+          { label: "Gold Crown", click: () => win?.webContents.send("do", "acc:crown") },
+        ],
+      },
+      { type: "separator" },
       { label: "Custom timers…", click: () => openSettings() },
       { label: "Start Pomodoro (25/5)", click: () => win?.webContents.send("do", "pomo:start") },
       { label: "Stop Pomodoro", click: () => win?.webContents.send("do", "pomo:stop") },
@@ -179,6 +270,10 @@ function createTray() {
       },
       { label: "Back-to-focus (demo)", click: () => win?.webContents.send("do", "focus") },
       { type: "separator" },
+      { label: "Wander mode (walk around)", type: "checkbox", checked: false,
+        click: (mi) => win?.webContents.send("do", `autonomous:${mi.checked ? "on" : "off"}`) },
+      { label: "Peek at screen edge", type: "checkbox", checked: false,
+        click: (mi) => win?.webContents.send("do", `peek:${mi.checked ? "on" : "off"}`) },
       { label: "Mute sounds", type: "checkbox", checked: false,
         click: (mi) => win?.webContents.send("do", `mute:${mi.checked ? "on" : "off"}`) },
       { type: "separator" },
@@ -195,7 +290,25 @@ function startControlServer() {
   try {
     ctrl = createServer((req, res) => {
       const path = (req.url || "").split("?")[0];
-      if (path.startsWith("/think")) win?.webContents.send("do", "thinking");
+      if (path.startsWith("/state")) {                 // live mood/perception JSON
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(latestState ?? {}));
+        return;
+      }
+      if (path.startsWith("/coat")) {                  // /coat?name=ginger
+        const name = new URL(req.url || "", "http://x").searchParams.get("name") || "default";
+        win?.webContents.send("do", `coat:${name}`);
+      }
+      else if (path.startsWith("/name")) {             // /name?value=Mochi
+        const v = new URL(req.url || "", "http://x").searchParams.get("value") || "";
+        win?.webContents.send("apply-name", v);
+      }
+      else if (path.startsWith("/accessory")) {        // /accessory?name=bow
+        const name = new URL(req.url || "", "http://x").searchParams.get("name") || "none";
+        win?.webContents.send("do", `acc:${name}`);
+      }
+      else if (path.startsWith("/throw")) win?.webContents.send("do", "throw");
+      else if (path.startsWith("/think")) win?.webContents.send("do", "thinking");
       else if (path.startsWith("/alert")) win?.webContents.send("do", "answerready");
       else if (path.startsWith("/celebrate")) win?.webContents.send("do", "celebrate");
       else if (path.startsWith("/oops")) win?.webContents.send("do", "worried");
@@ -212,7 +325,7 @@ function startControlServer() {
     });
     ctrl.on("error", (e) => console.warn("[pao] control server unavailable:", (e as Error).message));
     ctrl.listen(CONTROL_PORT, "127.0.0.1", () =>
-      console.log(`[pao] control server on http://127.0.0.1:${CONTROL_PORT} (/think /alert /celebrate /oops /hydrate /idle)`));
+      console.log(`[pao] control server on http://127.0.0.1:${CONTROL_PORT} (/state /think /alert /celebrate /oops /hydrate /idle)`));
   } catch (e) {
     console.warn("[pao] control server failed:", (e as Error).message);
   }
@@ -234,5 +347,8 @@ app.whenReady().then(() => {
   startControlServer();
 });
 
-app.on("before-quit", () => { try { ctrl?.close(); } catch { /* noop */ } });
+app.on("before-quit", () => {
+  try { ctrl?.close(); } catch { /* noop */ }
+  try { fgProc?.kill(); } catch { /* noop */ }
+});
 app.on("window-all-closed", () => app.quit());

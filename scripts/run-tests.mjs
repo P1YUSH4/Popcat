@@ -8,7 +8,7 @@ rmSync("dist-test", { recursive: true, force: true });
 mkdirSync("dist-test", { recursive: true });
 
 await build({
-  entryPoints: ["tests/timers.test.ts", "tests/stateMachine.test.ts"],
+  entryPoints: ["tests/timers.test.ts", "tests/stateMachine.test.ts", "tests/affect.test.ts"],
   outdir: "dist-test",
   bundle: true,
   platform: "node",
@@ -18,5 +18,5 @@ await build({
   logLevel: "warning",
 });
 
-execFileSync("node", ["--test", "dist-test/timers.test.mjs", "dist-test/stateMachine.test.mjs"],
+execFileSync("node", ["--test", "dist-test/timers.test.mjs", "dist-test/stateMachine.test.mjs", "dist-test/affect.test.mjs"],
   { stdio: "inherit" });
