@@ -18,12 +18,14 @@ const targets = [
   { entryPoints: ["src/preload/preload.ts"], outfile: "dist/preload.js", platform: "node", external: ["electron"] },
   { entryPoints: ["src/renderer/index.ts"], outfile: "dist/renderer.js", platform: "browser" },
   { entryPoints: ["src/renderer/settings.ts"], outfile: "dist/settings.js", platform: "browser" },
+  { entryPoints: ["src/renderer/onboarding.ts"], outfile: "dist/onboarding.js", platform: "browser" },
 ];
 
 function copyStatic() {
   mkdirSync("dist/assets/sprites", { recursive: true });
   cpSync("src/renderer/index.html", "dist/index.html");
   cpSync("src/renderer/settings.html", "dist/settings.html");
+  cpSync("src/renderer/onboarding.html", "dist/onboarding.html");
   cpSync("assets/sprites/pao.png", "dist/assets/sprites/pao.png");
   cpSync("assets/sprites/pao.json", "dist/assets/sprites/pao.json");
   cpSync("assets/sprites/tray.png", "dist/assets/sprites/tray.png");

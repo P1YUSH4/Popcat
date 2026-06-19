@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("bridge", {
     ipcRenderer.on("key-activity", () => cb()),
   onScrollActivity: (cb: (rot: number) => void) =>
     ipcRenderer.on("scroll-activity", (_e, rot: number) => cb(rot)),
+  onActiveWindow: (cb: (d: { app: string; title: string }) => void) =>
+    ipcRenderer.on("active-window", (_e, d: { app: string; title: string }) => cb(d)),
   setHitbox: (box: { x: number; y: number; w: number; h: number }) =>
     ipcRenderer.send("hitbox", box),
   setDragging: (v: boolean) => ipcRenderer.send("dragging", v),
@@ -23,11 +25,33 @@ contextBridge.exposeInMainWorld("bridge", {
   // settings window -> main -> overlay (custom pomodoro / meeting)
   setPomodoro: (cfg: unknown) => ipcRenderer.send("set-pomodoro", cfg),
   setMeeting: (cfg: unknown) => ipcRenderer.send("set-meeting", cfg),
+  setPomoState: (s: { on: boolean; paused: boolean; phase: string }) => ipcRenderer.send("pomo-state", s),
+  onReact: (cb: (d: { type: string; msg: string }) => void) =>
+    ipcRenderer.on("react", (_e, d: { type: string; msg: string }) => cb(d)),
   onSetPomodoro: (cb: (cfg: PomodoroCfg) => void) =>
     ipcRenderer.on("set-pomodoro", (_e, cfg: PomodoroCfg) => cb(cfg)),
   onSetMeeting: (cb: (cfg: MeetingCfg) => void) =>
     ipcRenderer.on("set-meeting", (_e, cfg: MeetingCfg) => cb(cfg)),
+  // persisted config
+  getConfig: () => ipcRenderer.invoke("get-config"),
+  setConfig: (patch: unknown) => ipcRenderer.send("set-config", patch),
+  onConfig: (cb: (cfg: PaoConfig) => void) => ipcRenderer.on("config", (_e, cfg: PaoConfig) => cb(cfg)),
+  onboardingDone: () => ipcRenderer.send("onboarding-done"),
+  onDragCancel: (cb: () => void) => ipcRenderer.on("drag-cancel", () => cb()),
 });
 
 export interface PomodoroCfg { focus: number; brk: number; long: number; every: number; start?: boolean; }
 export interface MeetingCfg { mins: number; label: string; }
+export interface PaoConfig {
+  name: string;
+  furId: string;
+  bellColor: string;
+  sound: { muted: boolean; volume: number };
+  sleepMin: number;
+  hydrationMin: number;
+  leisureNudge: boolean;
+  contextEnabled: boolean;
+  contextRules: { pattern: string; mode: string }[];
+  autostart: boolean;
+  firstRunDone: boolean;
+}

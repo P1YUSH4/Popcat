@@ -5,6 +5,7 @@
 class SoundFX {
   private ctx: AudioContext | null = null;
   muted = false;
+  volume = 1;                 // master volume 0..1 (from config)
 
   private ac(): AudioContext {
     if (!this.ctx) {
@@ -15,8 +16,13 @@ class SoundFX {
     return this.ctx;
   }
 
+  /** create/resume the context on a user gesture (autoplay-unlock fallback). */
+  unlock(): void { this.ac(); }
+
   /** one enveloped tone (fast attack, exponential decay). */
   private tone(freq: number, start: number, dur: number, gain = 0.18, type: OscillatorType = "sine"): void {
+    const peak = gain * this.volume;
+    if (this.muted || peak <= 0.0002) return;
     const ctx = this.ac();
     if (!ctx) return;
     const t0 = ctx.currentTime + start;
@@ -26,7 +32,7 @@ class SoundFX {
     osc.frequency.value = freq;
     osc.connect(g); g.connect(ctx.destination);
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(gain, t0 + 0.012);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + 0.012);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     osc.start(t0); osc.stop(t0 + dur + 0.03);
   }

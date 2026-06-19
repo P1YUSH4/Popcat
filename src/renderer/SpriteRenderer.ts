@@ -18,12 +18,12 @@ const FOOT_Y = 52, FOOT_X = 32; // sprite-local foot anchor (64px cell)
  */
 export class SpriteRenderer {
   private ctx: CanvasRenderingContext2D;
-  private sheet: HTMLImageElement;
+  private sheet: CanvasImageSource;       // image OR a recolored offscreen canvas
   private meta: SpriteMeta;
   readonly scale: number;
   readonly cell: number;
 
-  constructor(canvas: HTMLCanvasElement, sheet: HTMLImageElement, meta: SpriteMeta) {
+  constructor(canvas: HTMLCanvasElement, sheet: CanvasImageSource, meta: SpriteMeta) {
     this.ctx = canvas.getContext("2d", { alpha: true })!;
     this.sheet = sheet;
     this.meta = meta;
@@ -32,6 +32,9 @@ export class SpriteRenderer {
   }
 
   get context(): CanvasRenderingContext2D { return this.ctx; }
+
+  /** Swap the draw source (e.g. a recolored fur/bell canvas). */
+  setSheet(sheet: CanvasImageSource): void { this.sheet = sheet; }
 
   resize(w: number, h: number, dpr: number): void {
     const c = this.ctx.canvas;

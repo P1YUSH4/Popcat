@@ -13,6 +13,22 @@ export class Particles {
   private lastSteam = 0;
   private lastHeart = 0;
 
+  /** any particles alive right now (so the renderer can widen its clear rect). */
+  active(): boolean { return this.ps.length > 0; }
+
+  /** World-space bounding box of all live particles (+margin for their shapes),
+   *  or null if none. Particles are anchored where they spawned, so if the cat
+   *  moves away the renderer must still clear here — otherwise they strand. */
+  bounds(margin = 28): { x: number; y: number; w: number; h: number } | null {
+    if (!this.ps.length) return null;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of this.ps) {
+      if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+    }
+    return { x: minX - margin, y: minY - margin, w: (maxX - minX) + margin * 2, h: (maxY - minY) + margin * 2 };
+  }
+
   /** steam: ~1/200ms, max 8, rise + fade over 1.2s */
   steam(head: Vec2, tNow: number): void {
     if (this.ps.filter(p => p.k === "steam").length >= 8) return;

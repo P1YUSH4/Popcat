@@ -1,3 +1,4 @@
+import { classifyContext, type Mode } from "./context";
 import type { DisplayInfo, Vec2 } from "./types";
 
 /**
@@ -22,6 +23,8 @@ export class InputController {
   private fastSince = -1;                 // when cursorSpeed first exceeded HUNT threshold
   private lastMoveT = performance.now();  // last time the cursor actually moved
   scrollDir = 1;                          // last wheel direction (+1 down / -1 up)
+  activeApp = ""; activeTitle = "";       // focused window (context awareness)
+  userRules: { pattern: string; mode: string }[] = [];   // user context rules (from config)
 
   constructor() {
     window.bridge.onDisplayInfo((info: DisplayInfo) => {
@@ -36,6 +39,7 @@ export class InputController {
       if (rot) this.scrollDir = rot > 0 ? 1 : -1;   // +1 = down, -1 = up
       this.scrollEnergy = Math.min(1.4, this.scrollEnergy + 0.5);
     });
+    window.bridge.onActiveWindow(({ app, title }) => { this.activeApp = app; this.activeTitle = title; });
   }
 
   private onCursor(screen: Vec2): void {
@@ -80,4 +84,6 @@ export class InputController {
   isScrolling(): boolean { return this.scrollEnergy > 0.3; }
   /** current scroll intensity 0..1.4 (for the spinning yarn-ball speed). */
   scrollPower(): number { return this.scrollEnergy; }
+  /** behavior mode derived from the focused window (focus/coding/ai/leisure/neutral). */
+  contextMode(): Mode { return classifyContext(this.activeApp, this.activeTitle, this.userRules); }
 }

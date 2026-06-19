@@ -3,7 +3,8 @@ import type { InputController } from "./InputController";
 import type { PhysicsController } from "./PhysicsController";
 import { StateMachine, type State } from "./StateMachine";
 import { sound } from "./Sound";
-import { advancePomo, isDue, reminderDue } from "./timers";
+import { advancePomo, isDue, reminderDue, mmss } from "./timers";
+import { isWorkMode, type Mode } from "./context";
 import type { AnimName, Vec2 } from "./types";
 
 const STATE_ANIM: Record<State, AnimName> = {
@@ -30,7 +31,7 @@ export class BehaviorController {
   // timers / dwell
   private petStart = -1;
   private overheatUntil = 0;
-  private lastStretch = 0; stretchMs = 5 * 60_000;     // stretch reminder interval
+  private lastStretch = 0; stretchMs = 30 * 60_000;    // posture/stretch nudge (gentle)
   private lastMeow = 0; meowMs = 0;                    // 0 = meow reminder off
   meowMsg = "";
   private lastHydration = 0; hydrationMs = 15 * 60_000; // hydration nudge every 15 min
@@ -40,10 +41,19 @@ export class BehaviorController {
   private pomoOn = false;
   private pomoPhase: "work" | "break" | "long" = "work";
   private pomoEndsAt = 0; private pomoSessions = 0;
+  private pomoPaused = false; private pomoRemainingAtPause = 0;
   pomoWorkMs = 25 * 60_000; pomoBreakMs = 5 * 60_000; pomoLongMs = 15 * 60_000;
   pomoLongEvery = 4;        // long break after this many focus sessions
-  // meeting reminder (set via tray presets)
-  private meetingAt = 0; private meetingLabel = "Meeting";
+  // meeting reminders: multiple, absolute wall-clock (Date.now) times, with a
+  // pre-alert and a repeating "ring until acknowledged" alarm.
+  private meetings: { at: number; label: string; preAt: number; preDone: boolean }[] = [];
+  private ringing: { at: number; label: string } | null = null;
+  private ringNextAt = 0; private ringCount = 0;
+  ringMax = 5; ringEveryMs = 2500;
+  // context-awareness mode (from the focused window)
+  mode: Mode = "neutral";
+  leisureNudge = true;                  // gentle "back to it?" on leisure sites
+  private leisureSince = -1; private lastLeisureNudge = 0;
   // peek
   peekMode = false; private peekRevealUntil = 0;
   headDy = 90;   // foot->head distance in screen px (set from renderScale by Cat)
@@ -98,18 +108,67 @@ export class BehaviorController {
 
   // ---- pomodoro + meeting ----------------------------------------------
   startPomodoro(): void {
-    this.pomoOn = true; this.pomoPhase = "work"; this.pomoSessions = 0;
+    this.pomoOn = true; this.pomoPaused = false; this.pomoPhase = "work"; this.pomoSessions = 0;
     this.pomoEndsAt = performance.now() + this.pomoWorkMs;
     sound.startPomo();
-    this.say("🍅 Focus! 25 min", 2600);
+    this.say(`🍅 Focus! ${Math.round(this.pomoWorkMs / 60_000)} min`, 2600);
   }
-  stopPomodoro(): void { if (this.pomoOn) sound.stopPomo(); this.pomoOn = false; this.say("Pomodoro off", 1600); }
-  scheduleMeeting(mins: number, label = "Meeting"): void {
-    this.meetingLabel = label || "Meeting";
-    this.meetingAt = performance.now() + Math.max(0, mins) * 60_000;
-    this.say(mins > 0 ? `⏰ ${this.meetingLabel} in ${mins} min` : `⏰ ${this.meetingLabel} now`, 2600);
+  stopPomodoro(): void { if (this.pomoOn) sound.stopPomo(); this.pomoOn = false; this.pomoPaused = false; this.say("Pomodoro off", 1600); }
+  pausePomodoro(): void {
+    if (!this.pomoOn || this.pomoPaused) return;
+    this.pomoPaused = true;
+    this.pomoRemainingAtPause = Math.max(0, this.pomoEndsAt - performance.now());
+    sound.stopPomo();
+    this.say("⏸ Paused", 1800);
   }
-  cancelMeeting(): void { this.meetingAt = 0; this.say("Meeting reminder cleared", 1600); }
+  resumePomodoro(): void {
+    if (!this.pomoOn || !this.pomoPaused) return;
+    this.pomoEndsAt = performance.now() + this.pomoRemainingAtPause;
+    this.pomoPaused = false;
+    sound.startPomo();
+    this.say("▶ Resumed", 1600);
+  }
+  /** end the current phase now (jump straight to the next break/focus). */
+  skipPomodoro(): void {
+    if (!this.pomoOn) return;
+    this.pomoPaused = false;
+    this.pomoEndsAt = performance.now();   // due immediately -> tickTimers advances
+  }
+  scheduleMeeting(mins: number, label = "Meeting", preMin = 5): void {
+    const at = Date.now() + Math.max(0, mins) * 60_000;
+    this.addMeeting(at, label, preMin);
+    this.say(mins > 0 ? `⏰ ${label || "Meeting"} in ${mins} min` : `⏰ ${label || "Meeting"} now`, 2600);
+  }
+  scheduleMeetingAt(atMs: number, label = "Meeting", preMin = 5): void {
+    this.addMeeting(atMs, label, preMin);
+    const d = new Date(atMs);
+    this.say(`⏰ ${label || "Meeting"} at ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`, 2600);
+  }
+  private addMeeting(at: number, label: string, preMin: number): void {
+    const preAt = at - Math.max(0, preMin) * 60_000;
+    this.meetings.push({ at, label: label || "Meeting", preAt, preDone: preAt <= Date.now() });
+    this.meetings.sort((a, b) => a.at - b.at);
+  }
+  /** ✕ on the chip: dismiss a ringing alarm, else clear the soonest pending. */
+  cancelMeeting(): void {
+    if (this.ringing) { this.ackMeeting(); return; }
+    if (this.meetings.length) { this.meetings.shift(); this.say("Meeting reminder cleared", 1600); }
+  }
+  /** click the cat (or ✕) to acknowledge a ringing alarm. */
+  ackMeeting(): void {
+    if (!this.ringing) return;
+    this.ringing = null; this.ringCount = 0; this.bubbleUntil = 0;
+    if (this.sm.state === "MEETING") { this.sm.unlock(); this.toIdle(); }
+  }
+  /** 💤 snooze a ringing alarm. */
+  snoozeMeeting(min = 5): void {
+    if (!this.ringing) return;
+    const label = this.ringing.label;
+    this.ringing = null; this.ringCount = 0;
+    if (this.sm.state === "MEETING") { this.sm.unlock(); this.toIdle(); }
+    this.addMeeting(Date.now() + Math.max(1, min) * 60_000, label, 0);
+    this.say(`💤 Snoozed ${min} min`, 1800);
+  }
   /** apply custom Pomodoro durations (minutes). */
   configurePomodoro(focusMin: number, breakMin: number, longMin: number, longEvery: number): void {
     this.pomoWorkMs = Math.max(1, focusMin) * 60_000;
@@ -120,16 +179,31 @@ export class BehaviorController {
 
   // timer-chip getters (for the countdown shown above the head)
   isPomoActive(): boolean { return this.pomoOn; }
-  pomoRemainingMs(): number { return Math.max(0, this.pomoEndsAt - performance.now()); }
+  isPomoPaused(): boolean { return this.pomoPaused; }
+  pomoRemainingMs(): number {
+    return this.pomoPaused ? this.pomoRemainingAtPause : Math.max(0, this.pomoEndsAt - performance.now());
+  }
   pomoLabel(): string { return this.pomoPhase === "work" ? "Focus" : this.pomoPhase === "long" ? "Long break" : "Break"; }
-  isMeetingPending(): boolean { return this.meetingAt > 0; }
-  meetingRemainingMs(): number { return Math.max(0, this.meetingAt - performance.now()); }
-  get meetingName(): string { return this.meetingLabel; }
+  pomoPhaseKind(): "work" | "break" | "long" { return this.pomoPhase; }
+  /** completed focus sessions toward the next long break, and the total. */
+  pomoRound(): { done: number; total: number } {
+    return { done: this.pomoSessions % this.pomoLongEvery, total: this.pomoLongEvery };
+  }
+  isMeetingPending(): boolean { return this.meetings.length > 0 || this.ringing !== null; }
+  isRinging(): boolean { return this.ringing !== null; }
+  meetingChipText(): string {
+    if (this.ringing) return `📅 ${this.ringing.label} — now!`;
+    const m = this.meetings[0];
+    if (!m) return "";
+    const more = this.meetings.length > 1 ? ` (+${this.meetings.length - 1})` : "";
+    return `📅 ${m.label} ${mmss(m.at - Date.now())}${more}`;
+  }
   /** alerts (interrupt whatever, then settle to sit). */
   doMeetingAlert(label: string): void {
     this.sleeping = false; this.sm.unlock();
     sound.meetingAlarm();
-    this.say(`📅 ${label}!`, 6000); this.oneShot("MEETING", "meeting");
+    this.say(`📅 ${label} — now! (click me)`, this.ringEveryMs + 1200);
+    this.oneShot("MEETING", "meeting");
   }
   doBreakAlert(long: boolean): void {
     this.sleeping = false; this.sm.unlock();
@@ -147,10 +221,31 @@ export class BehaviorController {
   private tickTimers(): void {
     if (this.dragging) return;                 // don't interrupt an active drag
     const now = this.now;
-    if (isDue(now, this.meetingAt)) {
-      this.meetingAt = 0; this.doMeetingAlert(this.meetingLabel); return;
+    const wall = Date.now();
+    // pre-alerts: a gentle heads-up before each meeting
+    for (const m of this.meetings) {
+      if (!m.preDone && wall >= m.preAt && wall < m.at) {
+        m.preDone = true;
+        sound.breakChime();
+        this.say(`📅 ${m.label} in ${Math.max(1, Math.round((m.at - wall) / 60_000))} min`, 4500);
+      }
     }
-    if (this.pomoOn && isDue(now, this.pomoEndsAt)) {
+    // a due meeting starts ringing (one alarm at a time)
+    if (!this.ringing) {
+      const idx = this.meetings.findIndex(m => wall >= m.at);
+      if (idx >= 0) { this.ringing = this.meetings.splice(idx, 1)[0]; this.ringCount = 0; this.ringNextAt = 0; }
+    }
+    // repeat the ring until acknowledged (or ringMax rings)
+    if (this.ringing) {
+      if (wall >= this.ringNextAt) {
+        if (this.ringCount < this.ringMax) {
+          this.ringCount++; this.ringNextAt = wall + this.ringEveryMs;
+          this.doMeetingAlert(this.ringing.label);
+        } else { this.ringing = null; }
+      }
+      return;   // a ringing alarm takes priority this tick
+    }
+    if (this.pomoOn && !this.pomoPaused && isDue(now, this.pomoEndsAt)) {
       const step = advancePomo(this.pomoPhase, this.pomoSessions, this.pomoLongEvery);
       this.pomoPhase = step.phase; this.pomoSessions = step.sessions;
       const dur = step.phase === "work" ? this.pomoWorkMs
@@ -211,6 +306,11 @@ export class BehaviorController {
     if (interacting) this.lastActive = this.now;
     if (this.sleeping && interacting) this.wake();
 
+    // context awareness: adapt to the focused app/site
+    const mode = this.input.contextMode();
+    if (mode !== this.mode) { this.onModeChange(mode); this.mode = mode; }
+    this.tickLeisure(mode);
+
     this.tickTimers();      // pomodoro phase changes + meeting reminder (may interrupt)
     this.tickReminders();
 
@@ -224,8 +324,10 @@ export class BehaviorController {
       this.sm.update(dt); this.syncAnim(); return;
     }
 
-    // long inactivity -> yawn -> lie down -> sleep
-    if (!this.sleeping && this.now - this.lastActive > this.sleepMs) {
+    // long inactivity -> yawn -> lie down -> sleep. While actively in a work app
+    // (focus/coding/ai) the cat waits longer before dozing (reading pauses are ok).
+    const sleepDelay = isWorkMode(this.mode) ? Math.max(this.sleepMs, 5 * 60_000) : this.sleepMs;
+    if (!this.sleeping && this.now - this.lastActive > sleepDelay) {
       this.doDrowse();
       this.sm.update(dt); this.syncAnim(); return;
     }
@@ -273,9 +375,9 @@ export class BehaviorController {
   /** occasional small fidget so a sitting cat isn't perfectly static. */
   private tickFidget(): void {
     if (this.sm.state !== "SIT" || this.now < this.nextFidgetAt) return;
-    this.nextFidgetAt = this.now + 12_000 + Math.random() * 16_000;
-    if (Math.random() < 0.5) this.fidgetIdleUntil = this.now + 2000;  // stand & look
-    else this.doStretch();                                            // quick stretch
+    this.nextFidgetAt = this.now + 18_000 + Math.random() * 22_000;   // calmer cadence
+    if (Math.random() < 0.65) this.fidgetIdleUntil = this.now + 2000; // stand & look (most)
+    else this.doStretch();                                            // occasional stretch
   }
 
   private syncAnim(): void { this.anim.play(STATE_ANIM[this.sm.state]); }
@@ -352,8 +454,27 @@ export class BehaviorController {
     this.petStart = -1; return false;
   }
 
+  /** announce a mode change with a short bubble (focus/ai/leisure only). */
+  private onModeChange(m: Mode): void {
+    const msg = m === "focus" ? "🧠 Focus mode" : m === "ai" ? "🤖 AI mode" : m === "leisure" ? "👀 hmm…" : "";
+    if (msg && !this.sm.locked && !this.dragging) this.say(msg, 1600);
+  }
+
+  /** gentle "back to it?" nudge after a sustained stretch on leisure sites. */
+  private tickLeisure(mode: Mode): void {
+    if (mode !== "leisure") { this.leisureSince = -1; return; }
+    if (this.leisureSince < 0) this.leisureSince = this.now;
+    if (this.leisureNudge && !this.sm.locked && !this.dragging
+        && this.now - this.leisureSince > 8 * 60_000
+        && this.now - this.lastLeisureNudge > 5 * 60_000) {
+      this.lastLeisureNudge = this.now;
+      this.say("👀 back to it?", 4000);
+    }
+  }
+
   private tickReminders(): void {
     if (this.sm.locked || this.dragging) return;
+    if (this.mode === "focus") return;   // stay quiet during deep focus
     if (reminderDue(this.now, this.lastStretch, this.stretchMs)) { this.lastStretch = this.now; this.doStretch(); }
     if (reminderDue(this.now, this.lastMeow, this.meowMs)) { this.lastMeow = this.now; this.doMeow(this.meowMsg || "Meow!"); }
     if (reminderDue(this.now, this.lastHydration, this.hydrationMs)) { this.lastHydration = this.now; this.doHydration(); }

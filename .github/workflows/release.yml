@@ -1,0 +1,64 @@
+name: Release
+
+# Build Pao for Windows (.exe) and macOS (.dmg) in the cloud.
+# Run it two ways:
+#   • Actions tab -> "Release" -> "Run workflow"  (downloads under the run's Artifacts)
+#   • push a tag like v0.1.0                       (creates a GitHub Release with the files)
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to publish a Release on tag
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build bundles
+        run: npm run build
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac --publish never
+        env:
+          # unsigned build (no Apple Developer account needed)
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win portable --publish never
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pao-${{ runner.os }}
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+          if-no-files-found: error
+
+      - name: Attach to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe

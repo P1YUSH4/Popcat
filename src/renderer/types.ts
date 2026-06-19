@@ -38,6 +38,20 @@ export type AnimName =
 
 export interface DisplayInfo { originX: number; originY: number; width: number; height: number; }
 
+export interface PaoConfig {
+  name: string;
+  furId: string;
+  bellColor: string;
+  sound: { muted: boolean; volume: number };
+  sleepMin: number;
+  hydrationMin: number;
+  leisureNudge: boolean;
+  contextEnabled: boolean;
+  contextRules: { pattern: string; mode: string }[];
+  autostart: boolean;
+  firstRunDone: boolean;
+}
+
 declare global {
   interface Window {
     bridge: {
@@ -45,14 +59,22 @@ declare global {
       onCursor: (cb: (c: Vec2) => void) => void;
       onKeyActivity: (cb: () => void) => void;
       onScrollActivity: (cb: (rot: number) => void) => void;
+      onActiveWindow: (cb: (d: { app: string; title: string }) => void) => void;
       setHitbox: (box: { x: number; y: number; w: number; h: number }) => void;
       setDragging: (v: boolean) => void;
       onSetAutonomous: (cb: (v: boolean) => void) => void;
       onDo: (cb: (action: string) => void) => void;
       setPomodoro: (cfg: { focus: number; brk: number; long: number; every: number; start?: boolean }) => void;
-      setMeeting: (cfg: { mins: number; label: string }) => void;
+      setMeeting: (cfg: { mins?: number; atMs?: number; label: string; preMin?: number }) => void;
+      setPomoState: (s: { on: boolean; paused: boolean; phase: string }) => void;
+      onReact: (cb: (d: { type: string; msg: string }) => void) => void;
+      getConfig: () => Promise<PaoConfig>;
+      setConfig: (patch: Partial<PaoConfig>) => void;
+      onConfig: (cb: (cfg: PaoConfig) => void) => void;
+      onboardingDone: () => void;
+      onDragCancel: (cb: () => void) => void;
       onSetPomodoro: (cb: (cfg: { focus: number; brk: number; long: number; every: number; start?: boolean }) => void) => void;
-      onSetMeeting: (cb: (cfg: { mins: number; label: string }) => void) => void;
+      onSetMeeting: (cb: (cfg: { mins?: number; atMs?: number; label: string; preMin?: number }) => void) => void;
     };
     cat: import("./Cat").Cat; // public API: cat.startThinking() / cat.finishThinking()
   }
