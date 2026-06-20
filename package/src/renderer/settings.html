@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Pao — Timers</title>
+  <style>
+    :root { --ink:#2b263a; --pink:#fa98b2; --bell:#ffd24d; --line:#e3e1ec; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font: 13px ui-sans-serif, system-ui, sans-serif;
+      color: var(--ink); background: #fff7f7; padding: 16px;
+    }
+    h2 { margin: 0 0 4px; font-size: 14px; }
+    .card { background: #fff; border: 2px solid var(--line); border-radius: 12px;
+            padding: 14px; margin-bottom: 14px; }
+    .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; gap: 10px; }
+    .row label { color: #555; }
+    input { width: 84px; padding: 5px 8px; border: 2px solid var(--line);
+            border-radius: 8px; font: inherit; text-align: right; }
+    input[type=text] { width: 150px; text-align: left; }
+    button { width: 100%; margin-top: 8px; padding: 9px; border: none; border-radius: 10px;
+             font: 600 13px ui-sans-serif, sans-serif; color: var(--ink);
+             background: var(--bell); cursor: pointer; }
+    button.alt { background: var(--pink); color: #fff; }
+    button:active { transform: translateY(1px); }
+    .hint { color: #999; font-size: 11px; margin-top: 6px; }
+    .ok { color: #2e9e5b; font-size: 12px; min-height: 16px; margin-top: 6px; }
+    .mood { font-size: 12px; color: #444; }
+    .coats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .swatch { width: 38px; height: 38px; border-radius: 9px; border: 2px solid var(--line);
+              cursor: pointer; position: relative; padding: 0; }
+    .swatch.sel { border-color: var(--pink); box-shadow: 0 0 0 2px var(--pink); }
+    .swatch.locked { cursor: default; opacity: .5; }
+    .swatch .lk { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                  font-size: 14px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .chip { font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 2px solid var(--line);
+            background: #fff; cursor: pointer; color: var(--ink); }
+    .chip.sel { border-color: var(--pink); background: #fff0f4; }
+    .chip.locked { opacity: .5; cursor: default; }
+    .trophies { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .tro { font-size: 11px; padding: 3px 7px; border-radius: 999px; background: #f0eef6; color: #999; }
+    .tro.got { background: #e7f7ec; color: #2e9e5b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>🐾 Your cat</h2>
+    <div class="mood" id="mood">…</div>
+    <div class="row"><label>Name</label><input id="petName" type="text" maxlength="20" placeholder="e.g. Mochi" /></div>
+    <button id="saveName">Save name</button>
+    <div class="ok" id="nameOk"></div>
+  </div>
+
+  <div class="card">
+    <h2>🎨 Coat</h2>
+    <div class="coats" id="coats"></div>
+    <div class="hint">Locked coats unlock as you earn achievements.</div>
+  </div>
+
+  <div class="card">
+    <h2>🎀 Accessory</h2>
+    <div class="chips" id="accs"></div>
+    <div class="hint">Earn accessories through achievements too.</div>
+  </div>
+
+  <div class="card">
+    <h2>💝 Bond</h2>
+    <div class="row"><span id="bondInfo">…</span></div>
+    <div id="bondBar" style="background: #f0eef6; height: 12px; border-radius: 6px; overflow: hidden; margin: 8px 0;"><div id="bondProgress" style="background: linear-gradient(90deg, #fa98b2, #d856c4); height: 100%; width: 0%;"></div></div>
+    <div class="row"><button id="treatBtn" class="alt">🍖 Give treat</button></div>
+    <div class="ok" id="treatOk"></div>
+  </div>
+
+  <div class="card">
+    <h2>🏆 Achievements</h2>
+    <div class="trophies" id="trophies"></div>
+  </div>
+
+  <div class="card">
+    <h2>🍅 Pomodoro</h2>
+    <div class="row"><label>Focus (min)</label><input id="focus" type="number" min="1" value="25" /></div>
+    <div class="row"><label>Break (min)</label><input id="brk" type="number" min="1" value="5" /></div>
+    <div class="row"><label>Long break (min)</label><input id="long" type="number" min="1" value="15" /></div>
+    <div class="row"><label>Long break every</label><input id="every" type="number" min="1" value="4" /></div>
+    <button id="startPomo">Start Pomodoro</button>
+    <div class="ok" id="pomoOk"></div>
+  </div>
+
+  <div class="card">
+    <h2>📅 Meeting reminder</h2>
+    <div class="row"><label>In (min)</label><input id="mins" type="number" min="0" value="10" /></div>
+    <div class="row"><label>Label</label><input id="label" type="text" value="Meeting" /></div>
+    <button class="alt" id="setMeeting">Set reminder</button>
+    <div class="ok" id="meetOk"></div>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

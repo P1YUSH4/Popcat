@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-test/
+release/
+*.log
+elog.txt
+.DS_Store
+Thumbs.db
+tools/_*.png
+assets/illustrated/
