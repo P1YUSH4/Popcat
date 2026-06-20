@@ -451,6 +451,29 @@ export class Cat {
     // convert canvas coords -> screen coords using the display origin held in InputController
     const ox = this.input.cursorScreen.x - this.input.cursor.x;
     const oy = this.input.cursorScreen.y - this.input.cursor.y;
+    // If we're parked in peek mode the sprite is partially clipped at the
+    // screen edge — ensure the hitbox reflects the visible portion so clicks
+    // on the head still register (otherwise the window remains click-through).
+    try {
+      const winH = window.innerHeight;
+      if ((this.behavior as any)?.peekMode) {
+        // compute visible overlap with the viewport
+        const visTop = Math.max(0, Math.min(box.y + box.h, winH) - Math.max(box.y, 0));
+        if (visTop < 8) {
+          // nothing visible (feet pushed off) — create a small head-only
+          // hitbox aligned to the bottom edge so the head remains clickable.
+          const headH = Math.round(44 * this.renderer.scale);
+          const headY = Math.max(0, winH - headH - 2);
+          box = { x: box.x, y: headY, w: box.w, h: headH };
+        } else {
+          // clamp the hitbox to the visible portion
+          const y0 = Math.max(box.y, 0);
+          const y1 = Math.min(box.y + box.h, winH);
+          box = { x: box.x, y: y0, w: box.w, h: Math.max(8, y1 - y0) };
+        }
+      }
+    } catch { /* ignore in weird embed contexts */ }
+
     window.bridge.setHitbox({ x: box.x + ox, y: box.y + oy, w: box.w, h: box.h });
   }
 
