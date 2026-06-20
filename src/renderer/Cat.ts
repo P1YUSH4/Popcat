@@ -1,6 +1,7 @@
 import { AchievementsController } from "./Achievements";
 import { AffectController, type AffectSnapshot } from "./Affect";
 import { accessoryLabel, ACCESSORIES, ACCESSORY_UNLOCKS, accessoryRequirement, unlockedAccessories } from "./Accessories";
+import { BondController } from "./Bond";
 import { coatLabel, coatRequirement, COATS, COAT_UNLOCKS, unlockedCoats } from "./Coats";
 import { AnimationController } from "./AnimationController";
 import { BehaviorController } from "./BehaviorController";
@@ -27,6 +28,7 @@ export class Cat {
   readonly perception: Perception;
   readonly affectEngine: AffectController;
   private achv: AchievementsController;
+  private bond: BondController;
   private renderer: SpriteRenderer;
   private lastStateSent = 0;
 
@@ -78,6 +80,11 @@ export class Cat {
       if (coat) setTimeout(() => this.behavior.say(`🎨 New coat unlocked: ${coatLabel(coat)}!`, 3000), 1700);
       const acc = Object.keys(ACCESSORY_UNLOCKS).find((a) => ACCESSORY_UNLOCKS[a] === id);
       if (acc) setTimeout(() => this.behavior.say(`🎀 New accessory: ${accessoryLabel(acc)}!`, 3000), coat ? 3400 : 1700);
+    });
+    this.bond = new BondController((level, name) => {
+      this.behavior.doCelebrate();
+      this.behavior.say(`Bond level ${level}: ${name}`, 3200);
+      sound.achievement();
     });
     // foreground-window changes (optional signal) feed ambient perception
     window.bridge.onAppFocus?.((title: string) => this.perception.setActiveApp(title));
@@ -172,6 +179,17 @@ export class Cat {
     this.behavior.say(n ? `I'm ${n}! 🐾` : "Meow~", 2200);
   }
   petName(): string { return this.behavior.petName; }
+  /** daily care action: one treat per day builds bond and gives a cute reaction. */
+  giveTreat(): void {
+    const r = this.bond.giveTreat();
+    if (r.ok) {
+      this.behavior.say(`Yum! ${r.message}`, 2400);
+      this.behavior.doCelebrate();
+      this.particles.heart({ x: this.phys.pos.x, y: this.phys.pos.y - this.headOff }, performance.now());
+    } else {
+      this.behavior.say("Already had a treat today. Pet me instead?", 2400);
+    }
+  }
   /** first-run greeting: a happy hop + a friendly tip bubble. */
   welcome(): void {
     this.behavior.say("Hi! I'm Pao 🐾 right-click my tray icon to name me & dress me up", 6000);
@@ -216,6 +234,7 @@ export class Cat {
     this.lastStateSent = now;
     const snap = this.affectEngine.snapshot();
     this.achv.update(snap, dtSec);
+    this.bond.update(snap, dtSec);
     const ids = this.achv.unlockedIds();
     const unlocked = unlockedCoats(ids);
     const unlockedAcc = unlockedAccessories(ids);
@@ -235,6 +254,7 @@ export class Cat {
       })),
       achievements: this.achv.summary(),
       achList: this.achv.list(),
+      bond: this.bond.summary(),
     });
   }
 

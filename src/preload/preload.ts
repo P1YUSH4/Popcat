@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld("bridge", {
   setCoat: (name: string) => ipcRenderer.send("ui-coat", name),
   setAccessory: (name: string) => ipcRenderer.send("ui-accessory", name),
   getStatus: () => ipcRenderer.invoke("get-status"),
+  // settings window: daily treat action
+  giveTreat: () => ipcRenderer.send("ui-do", "treat"),
 });
 
 export interface PomodoroCfg { focus: number; brk: number; long: number; every: number; start?: boolean; }

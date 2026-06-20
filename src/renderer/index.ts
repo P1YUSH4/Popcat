@@ -39,6 +39,7 @@ async function main(): Promise<void> {
     else if (action === "celebrate") cat.celebrate();
     else if (action === "worried") cat.worried();
     else if (action === "hydrate") cat.hydrate();
+    else if (action === "treat") cat.giveTreat();
     else if (action === "pomo:start") cat.startPomodoro();
     else if (action === "pomo:stop") cat.stopPomodoro();
     else if (action === "focus") cat.focusAlert();

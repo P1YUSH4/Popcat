@@ -15,6 +15,7 @@ const coat = (name: string, label: string, base: string, hi: string, lo: string)
 
 export const COATS: Coat[] = [
   { name: "default", label: "Midnight (Jiji)", map: {} },
+  coat("classic", "Classic Pao", "#FFF7F7", "#D0D2DA", "#F1EEF5"),
   coat("ash", "Ash Grey", "#54525F", "#6A6877", "#3C3A45"),
   coat("warmgrey", "Warm Grey", "#8C8377", "#A99F90", "#6A6258"),   // the cozy tabby look
   coat("caramel", "Caramel", "#A88A6A", "#C8AD88", "#80684E"),
@@ -26,6 +27,7 @@ export const COATS: Coat[] = [
 
 /** Each non-default coat is EARNED by an achievement id (the unlock loop). */
 export const COAT_UNLOCKS: Record<string, string> = {
+  classic: "first_paw",
   ash: "first_focus",
   warmgrey: "flow",
   caramel: "focus_60",

@@ -197,6 +197,7 @@ ipcMain.on("set-meeting", (_e, cfg) => win?.webContents.send("set-meeting", cfg)
 ipcMain.on("ui-name", (_e, name: string) => win?.webContents.send("apply-name", name));
 ipcMain.on("ui-coat", (_e, name: string) => win?.webContents.send("do", `coat:${name}`));
 ipcMain.on("ui-accessory", (_e, name: string) => win?.webContents.send("do", `acc:${name}`));
+ipcMain.on("ui-do", (_e, action: string) => win?.webContents.send("do", action));
 ipcMain.handle("get-status", () => latestState ?? {});
 
 function openSettings() {
@@ -229,11 +230,13 @@ function createTray() {
       { label: "Celebrate (demo)", click: () => win?.webContents.send("do", "celebrate") },
       { label: "Worried (demo)", click: () => win?.webContents.send("do", "worried") },
       { label: "Hydration nudge", click: () => win?.webContents.send("do", "hydrate") },
+      { label: "Give treat", click: () => win?.webContents.send("do", "treat") },
       { type: "separator" },
       {
         label: "Coat colour",
         submenu: [
           { label: "Midnight (Jiji)", click: () => win?.webContents.send("do", "coat:default") },
+          { label: "Classic Pao", click: () => win?.webContents.send("do", "coat:classic") },
           { label: "Ash Grey", click: () => win?.webContents.send("do", "coat:ash") },
           { label: "Warm Grey", click: () => win?.webContents.send("do", "coat:warmgrey") },
           { label: "Caramel", click: () => win?.webContents.send("do", "coat:caramel") },
@@ -307,6 +310,7 @@ function startControlServer() {
         const name = new URL(req.url || "", "http://x").searchParams.get("name") || "none";
         win?.webContents.send("do", `acc:${name}`);
       }
+      else if (path.startsWith("/treat")) win?.webContents.send("do", "treat");
       else if (path.startsWith("/throw")) win?.webContents.send("do", "throw");
       else if (path.startsWith("/think")) win?.webContents.send("do", "thinking");
       else if (path.startsWith("/alert")) win?.webContents.send("do", "answerready");
@@ -333,12 +337,12 @@ function startControlServer() {
 
 app.whenReady().then(() => {
   // Serve bundled files (dist/) over app://bundle/...
-  protocol.handle("app", (request) => {
+  protocol.registerFileProtocol("app", (request, callback) => {
     const url = new URL(request.url);
     let pathname = decodeURIComponent(url.pathname);
     if (pathname === "/" || pathname === "") pathname = "/index.html";
-    const filePath = join(__dirname, pathname);
-    return net.fetch(pathToFileURL(filePath).toString());
+    const filePath = join(__dirname, pathname.replace(/^\//, ""));
+    callback({ path: filePath });
   });
 
   if (process.platform === "darwin") app.dock?.hide();

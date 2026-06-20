@@ -17,9 +17,10 @@ function flash(id: string, msg: string): void {
 interface CoatInfo { name: string; label: string; unlocked: boolean; need: string | null; color: string; }
 interface AccInfo { name: string; label: string; unlocked: boolean; need: string | null; }
 interface Trophy { id: string; title: string; unlocked: boolean; }
+interface BondInfo { xp: number; level: number; levelName: string; nextXp: number; dailyCareStreak: number; treatAvailable: boolean; }
 interface Status {
   name?: string; coat?: string; accessory?: string; mood?: string; rhythm?: string;
-  coats?: CoatInfo[]; accessories?: AccInfo[]; achList?: Trophy[];
+  coats?: CoatInfo[]; accessories?: AccInfo[]; achList?: Trophy[]; bond?: BondInfo;
   achievements?: { unlocked: number; total: number; dailyStreak: number; focusMinToday: number };
 }
 
@@ -28,9 +29,21 @@ document.getElementById("petName")!.addEventListener("input", () => { nameTouche
 
 function render(s: Status): void {
   const a = s.achievements;
+  const b = s.bond;
   document.getElementById("mood")!.textContent =
     `${s.name || "Your cat"} — feeling ${s.mood || "…"}` +
     (a ? `  ·  🔥 ${a.dailyStreak}d streak  ·  🏆 ${a.unlocked}/${a.total}` : "");
+
+  // Bond display
+  if (b) {
+    const pct = Math.round((b.xp / b.nextXp) * 100);
+    document.getElementById("bondInfo")!.textContent = `${b.levelName} (Lv${b.level})  ·  ${b.xp}/${b.nextXp} XP  ·  📅 ${b.dailyCareStreak}d`;
+    document.getElementById("bondProgress")!.style.width = `${Math.min(100, pct)}%`;
+    const btn = document.getElementById("treatBtn") as HTMLButtonElement;
+    btn.disabled = !b.treatAvailable;
+    btn.style.opacity = b.treatAvailable ? "1" : "0.5";
+    btn.title = b.treatAvailable ? "Give your cat a treat" : "Already gave a treat today";
+  }
 
   if (!nameTouched && s.name) (document.getElementById("petName") as HTMLInputElement).value = s.name;
 
@@ -95,4 +108,9 @@ document.getElementById("setMeeting")!.addEventListener("click", () => {
   const cfg = { mins: Math.max(0, num("mins", 10)), label: str("label", "Meeting") };
   window.bridge.setMeeting(cfg);
   flash("meetOk", cfg.mins > 0 ? `Reminder set in ${cfg.mins} min ✓` : "Reminder set (now) ✓");
+});
+
+document.getElementById("treatBtn")!.addEventListener("click", () => {
+  window.bridge.giveTreat?.();
+  flash("treatOk", "Yum! 💕");
 });
