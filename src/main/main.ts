@@ -322,6 +322,12 @@ function startControlServer() {
         const m = parseInt(new URL(req.url || "", "http://x").searchParams.get("mins") || "0", 10);
         win?.webContents.send("do", `meeting:${isNaN(m) ? 0 : m}`);
       }
+      else if (path.startsWith("/peek")) {
+        // /peek?on=1 or /peek?on=0
+        const on = new URL(req.url || "", "http://x").searchParams.get("on");
+        const val = (on === "1" || on === "on") ? "on" : "off";
+        win?.webContents.send("do", `peek:${val}`);
+      }
       else if (path.startsWith("/settings")) openSettings();
       else if (path.startsWith("/idle")) win?.webContents.send("do", "idle");
       res.writeHead(200, { "Content-Type": "text/plain" });
