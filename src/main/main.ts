@@ -196,6 +196,10 @@ public class WheelRaw {
   [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr DispatchMessageW(ref MSG m);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandleW(string n);
+  [DllImport("user32.dll")] static extern uint GetRawInputDeviceInfoW(IntPtr h, uint cmd, IntPtr data, ref uint size);
+  [DllImport("hid.dll")] static extern int HidP_GetUsageValue(int type, ushort page, ushort coll, ushort usage, out uint val, IntPtr pp, IntPtr report, uint len);
+  static System.Collections.Generic.Dictionary<IntPtr,IntPtr> _pp = new System.Collections.Generic.Dictionary<IntPtr,IntPtr>();
+  static IntPtr Pre(IntPtr h){ if(_pp.ContainsKey(h)) return _pp[h]; uint s=0; GetRawInputDeviceInfoW(h,0x20000005,IntPtr.Zero,ref s); IntPtr p=Marshal.AllocHGlobal((int)s); GetRawInputDeviceInfoW(h,0x20000005,p,ref s); _pp[h]=p; return p; }
   static IntPtr Proc(IntPtr h, uint msg, IntPtr w, IntPtr l) {
     if (msg == WM_INPUT) {
       uint size = 0; uint hsz = (uint)Marshal.SizeOf(typeof(RAWINPUTHEADER));
@@ -210,6 +214,18 @@ public class WheelRaw {
           } else if (hdr.dwType == 1) {
             RAWKEYBOARD k = (RAWKEYBOARD)Marshal.PtrToStructure((IntPtr)(buf.ToInt64()+(int)hsz), typeof(RAWKEYBOARD));
             if ((k.Flags & 1) == 0) { Console.Out.WriteLine("KEY"); Console.Out.Flush(); }   // keydown only; no key identity
+          } else if (hdr.dwType == 2) {
+            // precision-touchpad HID report. Read the Contact Count (HID usage
+            // page 0x0D, usage 0x54): >=2 fingers = a scroll/zoom gesture; 1
+            // finger = a cursor move/rest. Only 2+ fingers means "scrolling".
+            long bp = buf.ToInt64() + (int)hsz;
+            uint sizeHid = (uint)Marshal.ReadInt32((IntPtr)bp);
+            IntPtr report = (IntPtr)(bp + 8);
+            uint contacts = 0;
+            HidP_GetUsageValue(0, 0x0D, 0, 0x54, out contacts, Pre(hdr.hDevice), report, sizeHid);
+            // 2+ fingers = a scroll/zoom gesture. (A failed read leaves contacts
+            // at 0, so we only emit on a real multi-finger gesture — no spam.)
+            if (contacts >= 2) { Console.Out.WriteLine("SCROLL2"); Console.Out.Flush(); }
           }
         }
       } finally { Marshal.FreeHGlobal(buf); }
@@ -229,10 +245,11 @@ public class WheelRaw {
     WNDCLASS c = new WNDCLASS(); c.lpfnWndProc=_proc; c.hInstance=GetModuleHandleW(null); c.lpszClassName="PaoWheelRaw";
     RegisterClassW(ref c);
     IntPtr hwnd = CreateWindowExW(0,"PaoWheelRaw","",0,0,0,0,0,HWND_MESSAGE,IntPtr.Zero,c.hInstance,IntPtr.Zero);
-    RAWINPUTDEVICE[] rid = new RAWINPUTDEVICE[2];
+    RAWINPUTDEVICE[] rid = new RAWINPUTDEVICE[3];
     rid[0].usUsagePage=0x01; rid[0].usUsage=0x02; rid[0].dwFlags=RIDEV_INPUTSINK; rid[0].hwndTarget=hwnd; // mouse (wheel)
     rid[1].usUsagePage=0x01; rid[1].usUsage=0x06; rid[1].dwFlags=RIDEV_INPUTSINK; rid[1].hwndTarget=hwnd; // keyboard
-    RegisterRawInputDevices(rid,2,(uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
+    rid[2].usUsagePage=0x0D; rid[2].usUsage=0x05; rid[2].dwFlags=RIDEV_INPUTSINK; rid[2].hwndTarget=hwnd; // precision touchpad
+    RegisterRawInputDevices(rid,3,(uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
     MSG msg; while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref msg); DispatchMessageW(ref msg); }
   }
 }`;
@@ -244,13 +261,20 @@ public class WheelRaw {
     wheelProc = spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file],
       { windowsHide: true, env: { ...process.env, PAO_PARENT: String(process.pid) } });
     wheelProc.stdout?.setEncoding("utf8");
-    let lastFwd = 0, lastDir = 0;
+    let lastFwd = 0, lastDir = 0, lastTouchFwd = 0;
     wheelProc.stdout?.on("data", (chunk: string) => {
       const now = Date.now();
       for (const raw of chunk.split(/\r?\n/)) {
         const line = raw.trim();
         if (line === "KEY") {                       // a keystroke pulse (no identity)
           if (win && !win.isDestroyed()) win.webContents.send("key-activity");
+          continue;
+        }
+        if (line === "SCROLL2") {                    // 2+ fingers on the touchpad = scroll/zoom gesture
+          if (now - lastTouchFwd >= 50) {            // throttle the report flood
+            lastTouchFwd = now;
+            if (win && !win.isDestroyed()) win.webContents.send("scroll-activity", 1);
+          }
           continue;
         }
         const mm = line.match(/^WHEEL\s+(-?\d+)/);

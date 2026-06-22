@@ -34,10 +34,10 @@ export class InputController {
     });
     window.bridge.onScrollActivity((rot: number) => {
       if (rot) this.scrollDir = rot > 0 ? 1 : -1;   // +1 = down, -1 = up
-      // a single wheel notch should give an obvious, lingering reaction (not a
-      // ~0.1s flash) — generous energy + a slow decay below keeps the cat
-      // playing with the yarn for ~0.7s after the last tick.
-      this.scrollEnergy = Math.min(2.2, this.scrollEnergy + 0.8);
+      // one notch gives a clear reaction, but cap low so the cat settles soon
+      // after you STOP (the trackpad streams events, so a high cap would linger
+      // ~2.4s). With the decay below this settles ~0.45s after the last event.
+      this.scrollEnergy = Math.min(1.0, this.scrollEnergy + 0.8);
     });
   }
 
@@ -60,7 +60,7 @@ export class InputController {
   /** Call once per frame to decay transient signals. */
   update(dt: number): void {
     this.keyEnergy = Math.max(0, this.keyEnergy - dt * 1.2);
-    this.scrollEnergy = Math.max(0, this.scrollEnergy - dt * 0.8);
+    this.scrollEnergy = Math.max(0, this.scrollEnergy - dt * 1.6);
     // cursor speed decays if no movement events arrive
     this.cursorSpeed *= Math.max(0, 1 - dt * 4);
     // drop keystroke timestamps older than 1s
