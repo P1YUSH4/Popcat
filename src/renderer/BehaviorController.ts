@@ -68,6 +68,7 @@ export class BehaviorController {
   sleepMs = 60_000;                 // inactivity before the cat drifts to sleep
   private nextFidgetAt = 0;
   private fidgetIdleUntil = 0;      // brief "stand & look" fidget window
+  private ponderUntil = 0;          // auto-exit time for a natural "thinking" pause
 
   constructor(
     private anim: AnimationController,
@@ -90,6 +91,18 @@ export class BehaviorController {
     this.anim.play("think", { force: true });
   }
   finishThinking(): void { this.oneShot("JUMP", "jump"); }
+  /** a natural, self-limiting "thinking" pause: the cat ponders for a moment,
+   *  then settles back to idle on its own. Triggered by the idle brain when
+   *  you're present (cursor alive) but not typing — a shared little beat of
+   *  thought. Distinct from startThinking(), the command-driven loop that holds
+   *  until answerReady()/rest(); only this one sets ponderUntil to auto-end. */
+  ponder(ms = 2400): void {
+    if (!this.affectIdle()) return;
+    this.phys.spring(); this.phys.setTarget(this.phys.pos);
+    this.sm.transition("THINK", { lock: true });
+    this.anim.play("think", { force: true });
+    this.ponderUntil = this.now + ms;
+  }
   /** answer is ready -> drop thinking and play the attention-grabbing alert. */
   answerReady(): void { this.sleeping = false; this.sm.unlock(); this.oneShot("ALERT", "alert"); }
   /** settle back to rest (e.g. cancel thinking without an alert). */
@@ -181,11 +194,22 @@ export class BehaviorController {
     this.anim.play("meow", { force: true });
   }
   dismissMeow(): void { if (this.sm.state === "MEOW") { this.sm.unlock(); this.toIdle(); } }
-  setPeek(on: boolean): void { this.peekMode = on; if (!on && !this.sm.locked) this.toIdle(); }
+  setPeek(on: boolean): void {
+    this.peekMode = on;
+    if (!on) {
+      // leaving peek: restore the normal on-screen clamp and SNAP the cat back
+      // into view immediately so its hitbox is reachable and it's draggable again.
+      this.phys.setBounds(this.bounds.x, this.bounds.y);
+      this.phys.pos.x = Math.min(this.phys.pos.x, this.bounds.x - 60);
+      this.phys.pos.y = Math.max(60, Math.min(this.phys.pos.y, this.bounds.y - 60));
+      if (!this.sm.locked) this.toIdle();
+    }
+  }
   revealFromPeek(): void {
     this.peekRevealUntil = performance.now() + 4000;
+    this.phys.setBounds(this.bounds.x, this.bounds.y);   // clamp back on-screen while revealed
     this.phys.follow(0.1);
-    this.phys.setTarget({ x: this.phys.pos.x, y: this.bounds.y * 0.6 });
+    this.phys.setTarget({ x: this.bounds.x * 0.82, y: this.bounds.y * 0.6 });
   }
   setAutonomous(on: boolean): void { this.autonomous = on; if (!on && !this.sm.locked) this.toIdle(); }
 
@@ -257,8 +281,26 @@ export class BehaviorController {
     if (interacting) this.lastActive = this.now;
     if (this.sleeping && interacting) this.wake();
 
+    // Active scrolling/typing must ALWAYS get a prompt reaction. Passive
+    // auto-behaviours (sleep chain, idle fidgets, ponder, reminder stretches)
+    // lock the state machine and would otherwise swallow the input until they
+    // finish — which made scrolling "react only at certain times". Preempt them:
+    // unlock so this frame's reactive decision (PAPER/TYPE) runs. We never
+    // interrupt the things you're deliberately doing TO the cat (drag, throw).
+    if ((this.input.isScrolling() || this.input.isTyping())
+        && this.sm.locked && !this.dragging && !this.thrown && !this.hardState()) {
+      this.sleeping = false;
+      this.sm.unlock();
+    }
+
     this.tickTimers();      // pomodoro phase changes + meeting reminder (may interrupt)
     this.tickReminders();
+
+    // a natural "thinking" pause ends on its own. (The command-driven
+    // startThinking() leaves ponderUntil at 0, so it still holds indefinitely.)
+    if (this.ponderUntil && this.now > this.ponderUntil && this.sm.state === "THINK") {
+      this.ponderUntil = 0; this.sm.unlock(); this.toIdle();
+    }
 
     // thrown: stay in FALL (bouncing off walls) until it settles on the floor
     if (this.thrown) {
@@ -268,10 +310,12 @@ export class BehaviorController {
 
     if (this.sm.locked) { this.sm.update(dt); this.syncAnim(); return; }
 
-    // peek mode parks the cat at the bottom edge (unless temporarily revealed)
+    // peek mode parks the cat at the RIGHT screen edge, half hidden, peeking in
+    // (unless temporarily revealed). Widen the right bound so it can hug/pass it.
     if (this.peekMode && this.now > this.peekRevealUntil) {
+      this.phys.bounds.maxX = this.bounds.x + 56;
       this.phys.follow(0.06);
-      this.phys.setTarget({ x: this.phys.pos.x, y: this.bounds.y + 40 });
+      this.phys.setTarget({ x: this.bounds.x + 8, y: this.phys.pos.y });
       this.sm.transition("PEEK");
       this.sm.update(dt); this.syncAnim(); return;
     }
@@ -283,6 +327,9 @@ export class BehaviorController {
     }
 
     this.tickFidget();   // occasional idle fidget while sitting
+    // a fidget may have started a locked one-shot (ponder/stretch/jump/…) — let
+    // it play instead of immediately clobbering it back to SIT via applyState.
+    if (this.sm.locked) { this.sm.update(dt); this.syncAnim(); return; }
 
     const s = this.autonomous ? this.decideReactive() : this.decideDragOnly();
     this.applyState(s);
@@ -305,7 +352,10 @@ export class BehaviorController {
   /** inactivity -> sleepy chain: yawn -> lie down -> sleep loop (wakeable). */
   private doDrowse(): void {
     this.sleeping = true;
-    this.phys.spring(); this.phys.setTarget(this.phys.pos);
+    // a sleepy cat sinks DOWN to rest on the floor (screen bottom) instead of
+    // dozing off mid-air. Soft spring so it eases down gently while yawning.
+    this.phys.spring(); this.phys.tune(42, 11);
+    this.phys.setTarget({ x: this.phys.pos.x, y: this.bounds.y });
     this.sm.transition("YAWN", { lock: true });
     this.anim.play("yawn", { force: true, onComplete: () => {
       this.sm.transition("SLEEP", { lock: true });
@@ -328,6 +378,11 @@ export class BehaviorController {
     if (this.sm.state !== "SIT" || this.now < this.nextFidgetAt) return;
     this.nextFidgetAt = this.now + 12_000 + Math.random() * 16_000;
     if (this.quietMode) return;   // deep focus: stay still, don't distract
+    // present but not typing (cursor alive, hands off the keys) -> a natural
+    // little "thinking" beat, as if pausing to ponder along with you.
+    if (!this.input.isTyping() && this.input.cursorIdleMs() < 6000 && Math.random() < 0.35) {
+      this.ponder(); return;
+    }
     const look = () => { this.fidgetIdleUntil = this.now + 2000; };   // stand & look around
     const r = Math.random();
     switch (this.contextCategory) {
@@ -342,6 +397,13 @@ export class BehaviorController {
     }
   }
 
+  /** states active scroll/type must NOT interrupt — you're holding the cat
+   *  (drag/shake) or it's airborne (fall). Everything else (sleep, fidgets,
+   *  ponder, reminder one-shots) yields to active input. */
+  private hardState(): boolean {
+    const s = this.sm.state;
+    return s === "DRAG" || s === "SHAKE" || s === "FALL";
+  }
   private syncAnim(): void { this.anim.play(STATE_ANIM[this.sm.state]); }
   facingLeft(): boolean { return !this.dragging && this.phys.vel.x < -8; }
   isCrouching(): boolean { return this.sm.state === "HUNT"; }

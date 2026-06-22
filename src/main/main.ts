@@ -1,6 +1,5 @@
-import { app, BrowserWindow, screen, ipcMain, Tray, Menu, protocol, net, nativeImage } from "electron";
+import { app, BrowserWindow, screen, ipcMain, Tray, Menu, protocol, nativeImage } from "electron";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { createServer, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync } from "node:fs";
@@ -32,9 +31,21 @@ let hitbox: { x: number; y: number; w: number; h: number } | null = null;
 let interacting = false; // true while the cursor is over the cat (mouse captured)
 let draggingActive = false; // true while the cat is being dragged (keep capture)
 
+/** Union bounding box of ALL displays (the full virtual desktop), so the overlay
+ *  spans every monitor and the cat can roam across them. Cursor coords from
+ *  screen.getCursorScreenPoint() are already in this global space; the renderer
+ *  subtracts the origin we send it. */
+function virtualBounds() {
+  const ds = screen.getAllDisplays();
+  const minX = Math.min(...ds.map((d) => d.bounds.x));
+  const minY = Math.min(...ds.map((d) => d.bounds.y));
+  const maxX = Math.max(...ds.map((d) => d.bounds.x + d.bounds.width));
+  const maxY = Math.max(...ds.map((d) => d.bounds.y + d.bounds.height));
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
 function createWindow() {
-  const display = screen.getPrimaryDisplay();
-  const { x, y, width, height } = display.bounds;
+  const { x, y, width, height } = virtualBounds();
 
   win = new BrowserWindow({
     x, y, width, height,
@@ -70,9 +81,22 @@ function createWindow() {
     win = null;
   });
 
+  // a monitor was added/removed/rearranged -> resize the overlay to the new
+  // virtual desktop and tell the renderer its new origin/size.
+  const reflow = () => {
+    if (!win || win.isDestroyed()) return;
+    const b = virtualBounds();
+    win.setBounds(b);
+    win.webContents.send("display-info", { originX: b.x, originY: b.y, width: b.width, height: b.height });
+  };
+  screen.on("display-added", reflow);
+  screen.on("display-removed", reflow);
+  screen.on("display-metrics-changed", reflow);
+
   startCursorLoop();
   startKeyboardHook();
   startWindowWatch();
+  startWheelWatch();
 }
 
 // ---- optional foreground-window watcher (ambient perception) -------------
@@ -94,6 +118,8 @@ function startWindowWatch() {
       "\"@",
       "$last=''",
       "while($true){",
+      // self-terminate if the parent (Electron) died, so we never orphan
+      " if($env:PAO_PARENT -and -not (Get-Process -Id $env:PAO_PARENT -ErrorAction SilentlyContinue)){break}",
       " $h=[Fg]::GetForegroundWindow();$sb=New-Object System.Text.StringBuilder 512;",
       " [void][Fg]::GetWindowText($h,$sb,512);$t=$sb.ToString();",
       " if($t -ne $last){$last=$t;[Console]::Out.WriteLine($t)}",
@@ -110,12 +136,12 @@ function startWindowWatch() {
     // System Events on first run). App name only — never window content.
     const osa = "tell application \"System Events\" to get name of first application process whose frontmost is true";
     cmd = "/bin/sh";
-    args = ["-c", `while true; do osascript -e '${osa}' 2>/dev/null; sleep 2; done`];
+    args = ["-c", `while true; do [ -n "$PAO_PARENT" ] && ! kill -0 "$PAO_PARENT" 2>/dev/null && exit 0; osascript -e '${osa}' 2>/dev/null; sleep 2; done`];
   } else {
     return;   // linux: no active-window watcher yet
   }
   try {
-    fgProc = spawn(cmd, args, { windowsHide: true });
+    fgProc = spawn(cmd, args, { windowsHide: true, env: { ...process.env, PAO_PARENT: String(process.pid) } });
     let last = "";
     fgProc.stdout?.setEncoding("utf8");
     fgProc.stdout?.on("data", (chunk: string) => {
@@ -128,6 +154,120 @@ function startWindowWatch() {
     console.log(`[pao] foreground-window watcher active (${process.platform}; app/title only, never content)`);
   } catch (e) {
     console.warn("[pao] window watcher failed:", (e as Error).message);
+  }
+}
+
+// ---- global scroll watcher (Windows, Raw Input) --------------------------
+// uiohook-napi delivers mouse-move but NOT wheel on this class of Windows
+// setup, and low-level mouse hooks (WH_MOUSE_LL) can't see PRECISION TRACKPAD
+// scrolling at all (Windows routes it through DirectManipulation). So we use the
+// Raw Input API (RIDEV_INPUTSINK on the mouse usage page) in a tiny C#/PowerShell
+// helper with a message-only window — it sees BOTH a mouse wheel and two-finger
+// trackpad scroll. It prints the signed wheel delta per scroll; main forwards it
+// to the renderer on the same "scroll-activity" channel. Reads scroll deltas
+// only — never window content. (Trackpads emit a flood of tiny inertial deltas,
+// so forwarding is throttled below.)
+let wheelProc: ChildProcess | null = null;
+function startWheelWatch() {
+  if (process.platform !== "win32") return;   // uiohook covers wheel on mac/linux
+  const cs = `
+using System;
+using System.Runtime.InteropServices;
+public class WheelRaw {
+  const int WM_INPUT = 0x00FF;
+  const uint RID_INPUT = 0x10000003;
+  const uint RIDEV_INPUTSINK = 0x00000100;
+  const ushort RI_MOUSE_WHEEL = 0x0400;
+  static readonly IntPtr HWND_MESSAGE = new IntPtr(-3);
+  delegate IntPtr WndProc(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  static WndProc _proc = Proc;
+  [StructLayout(LayoutKind.Sequential)] struct RAWINPUTDEVICE { public ushort usUsagePage; public ushort usUsage; public uint dwFlags; public IntPtr hwndTarget; }
+  [StructLayout(LayoutKind.Sequential)] struct RAWINPUTHEADER { public uint dwType; public uint dwSize; public IntPtr hDevice; public IntPtr wParam; }
+  [StructLayout(LayoutKind.Sequential)] struct RAWMOUSE { public ushort usFlags; public ushort _pad; public ushort usButtonFlags; public ushort usButtonData; public uint ulRawButtons; public int lLastX; public int lLastY; public uint ulExtraInformation; }
+  [StructLayout(LayoutKind.Sequential)] struct RAWKEYBOARD { public ushort MakeCode; public ushort Flags; public ushort Reserved; public ushort VKey; public uint Message; public uint ExtraInformation; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct WNDCLASS { public uint style; public WndProc lpfnWndProc; public int cbClsExtra; public int cbWndExtra; public IntPtr hInstance; public IntPtr hIcon; public IntPtr hCursor; public IntPtr hbrBackground; public string lpszMenuName; public string lpszClassName; }
+  [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptx; public int pty; }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern ushort RegisterClassW(ref WNDCLASS c);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CreateWindowExW(uint ex, string cls, string name, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr inst, IntPtr p);
+  [DllImport("user32.dll")] static extern IntPtr DefWindowProcW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] d, uint num, uint size);
+  [DllImport("user32.dll")] static extern uint GetRawInputData(IntPtr hRawInput, uint cmd, IntPtr data, ref uint size, uint hdrSize);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetMessageW(out MSG msg, IntPtr h, uint min, uint max);
+  [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr DispatchMessageW(ref MSG m);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandleW(string n);
+  static IntPtr Proc(IntPtr h, uint msg, IntPtr w, IntPtr l) {
+    if (msg == WM_INPUT) {
+      uint size = 0; uint hsz = (uint)Marshal.SizeOf(typeof(RAWINPUTHEADER));
+      GetRawInputData(l, RID_INPUT, IntPtr.Zero, ref size, hsz);
+      IntPtr buf = Marshal.AllocHGlobal((int)size);
+      try {
+        if (GetRawInputData(l, RID_INPUT, buf, ref size, hsz) == size) {
+          RAWINPUTHEADER hdr = (RAWINPUTHEADER)Marshal.PtrToStructure(buf, typeof(RAWINPUTHEADER));
+          if (hdr.dwType == 0) {
+            RAWMOUSE m = (RAWMOUSE)Marshal.PtrToStructure((IntPtr)(buf.ToInt64()+(int)hsz), typeof(RAWMOUSE));
+            if ((m.usButtonFlags & RI_MOUSE_WHEEL) != 0) { short d=(short)m.usButtonData; Console.Out.WriteLine("WHEEL "+d); Console.Out.Flush(); }
+          } else if (hdr.dwType == 1) {
+            RAWKEYBOARD k = (RAWKEYBOARD)Marshal.PtrToStructure((IntPtr)(buf.ToInt64()+(int)hsz), typeof(RAWKEYBOARD));
+            if ((k.Flags & 1) == 0) { Console.Out.WriteLine("KEY"); Console.Out.Flush(); }   // keydown only; no key identity
+          }
+        }
+      } finally { Marshal.FreeHGlobal(buf); }
+    }
+    return DefWindowProcW(h, msg, w, l);
+  }
+  public static void Run(int ppid) {
+    // self-terminate if the parent (Electron) dies, so we never orphan a stuck
+    // process holding a global Raw Input registration (even on a force-kill).
+    if (ppid > 0) {
+      System.Threading.Thread t = new System.Threading.Thread(delegate() {
+        try { System.Diagnostics.Process.GetProcessById(ppid).WaitForExit(); } catch {}
+        Environment.Exit(0);
+      });
+      t.IsBackground = true; t.Start();
+    }
+    WNDCLASS c = new WNDCLASS(); c.lpfnWndProc=_proc; c.hInstance=GetModuleHandleW(null); c.lpszClassName="PaoWheelRaw";
+    RegisterClassW(ref c);
+    IntPtr hwnd = CreateWindowExW(0,"PaoWheelRaw","",0,0,0,0,0,HWND_MESSAGE,IntPtr.Zero,c.hInstance,IntPtr.Zero);
+    RAWINPUTDEVICE[] rid = new RAWINPUTDEVICE[2];
+    rid[0].usUsagePage=0x01; rid[0].usUsage=0x02; rid[0].dwFlags=RIDEV_INPUTSINK; rid[0].hwndTarget=hwnd; // mouse (wheel)
+    rid[1].usUsagePage=0x01; rid[1].usUsage=0x06; rid[1].dwFlags=RIDEV_INPUTSINK; rid[1].hwndTarget=hwnd; // keyboard
+    RegisterRawInputDevices(rid,2,(uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE)));
+    MSG msg; while (GetMessageW(out msg, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref msg); DispatchMessageW(ref msg); }
+  }
+}`;
+  const script = ["$ErrorActionPreference='SilentlyContinue'", "Add-Type @'", cs, "'@",
+    "[WheelRaw]::Run([int]($env:PAO_PARENT))"].join("\n");
+  try {
+    const file = join(tmpdir(), "pao-wheel.ps1");
+    writeFileSync(file, script, "utf8");
+    wheelProc = spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file],
+      { windowsHide: true, env: { ...process.env, PAO_PARENT: String(process.pid) } });
+    wheelProc.stdout?.setEncoding("utf8");
+    let lastFwd = 0, lastDir = 0;
+    wheelProc.stdout?.on("data", (chunk: string) => {
+      const now = Date.now();
+      for (const raw of chunk.split(/\r?\n/)) {
+        const line = raw.trim();
+        if (line === "KEY") {                       // a keystroke pulse (no identity)
+          if (win && !win.isDestroyed()) win.webContents.send("key-activity");
+          continue;
+        }
+        const mm = line.match(/^WHEEL\s+(-?\d+)/);
+        if (!mm) continue;
+        const delta = parseInt(mm[1], 10);
+        const dir = Math.sign(delta);
+        // throttle the trackpad's inertial flood: forward at most ~30/s, but
+        // always forward immediately on a direction change so it stays snappy.
+        if (now - lastFwd < 33 && dir === lastDir) continue;
+        lastFwd = now; lastDir = dir;
+        if (win && !win.isDestroyed()) win.webContents.send("scroll-activity", delta);
+      }
+    });
+    wheelProc.on("error", (e) => console.warn("[pao] input watcher unavailable:", e.message));
+    console.log("[pao] input watcher active (win32 Raw Input — wheel + trackpad + keystrokes)");
+  } catch (e) {
+    console.warn("[pao] scroll watcher failed:", (e as Error).message);
   }
 }
 
@@ -168,6 +308,10 @@ function startCursorLoop() {
 // ---- optional global keyboard hook --------------------------------------
 let keyboardHookActive = false;
 function startKeyboardHook() {
+  // On Windows the Raw Input watcher (startWheelWatch) already delivers BOTH
+  // keystrokes and wheel/trackpad reliably; uiohook delivers neither here, so
+  // skip it to avoid wasted hooks and any double-counting.
+  if (process.platform === "win32") { keyboardHookActive = true; return; }
   try {
     // optionalDependency: only present if it installed/compiled successfully
     const { uIOhook } = require("uiohook-napi");
@@ -341,24 +485,38 @@ function startControlServer() {
   }
 }
 
-app.whenReady().then(() => {
-  // Serve bundled files (dist/) over app://bundle/...
-  protocol.registerFileProtocol("app", (request, callback) => {
-    const url = new URL(request.url);
-    let pathname = decodeURIComponent(url.pathname);
-    if (pathname === "/" || pathname === "") pathname = "/index.html";
-    const filePath = join(__dirname, pathname.replace(/^\//, ""));
-    callback({ path: filePath });
-  });
+// A desktop pet should never vanish on a stray error — log and keep going
+// instead of letting the main process die (which would drop the overlay).
+process.on("uncaughtException", (e) => console.error("[pao] uncaughtException:", e));
+process.on("unhandledRejection", (e) => console.error("[pao] unhandledRejection:", e));
 
-  if (process.platform === "darwin") app.dock?.hide();
-  createWindow();
-  createTray();
-  startControlServer();
-});
+// Single-instance: a second launch must NOT spawn a duplicate overlay cat.
+// If we can't get the lock, another Pao already owns the screen — quit quietly.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => { /* already running; nothing to focus (overlay is unfocusable) */ });
+
+  app.whenReady().then(() => {
+    // Serve bundled files (dist/) over app://bundle/...
+    protocol.registerFileProtocol("app", (request, callback) => {
+      const url = new URL(request.url);
+      let pathname = decodeURIComponent(url.pathname);
+      if (pathname === "/" || pathname === "") pathname = "/index.html";
+      const filePath = join(__dirname, pathname.replace(/^\//, ""));
+      callback({ path: filePath });
+    });
+
+    if (process.platform === "darwin") app.dock?.hide();
+    createWindow();
+    createTray();
+    startControlServer();
+  });
+}
 
 app.on("before-quit", () => {
   try { ctrl?.close(); } catch { /* noop */ }
   try { fgProc?.kill(); } catch { /* noop */ }
+  try { wheelProc?.kill(); } catch { /* noop */ }
 });
 app.on("window-all-closed", () => app.quit());

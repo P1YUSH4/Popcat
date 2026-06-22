@@ -59,6 +59,7 @@ declare global {
       onSetName?: (cb: (name: string) => void) => void;
       setCoat?: (name: string) => void;
       setAccessory?: (name: string) => void;
+      giveTreat?: () => void;
       getStatus?: () => Promise<Record<string, unknown>>;
     };
     cat: import("./Cat").Cat; // public API: cat.startThinking() / cat.finishThinking()

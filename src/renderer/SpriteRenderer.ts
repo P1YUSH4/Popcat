@@ -168,6 +168,32 @@ export class SpriteRenderer {
 
   drawnCell(): number { return this.cell * this.scale; }
 
+  /**
+   * Soft elliptical contact shadow under the feet. Grounds the cat on the
+   * desktop so it stops looking like it floats — drawn in screen space BEFORE
+   * the sprite. It stays at the foot point while the cat leaps (the sprite
+   * lifts above it), which is what sells a jump as real height. `strength`
+   * fades it when the cat is held/airborne; `widthScale` lets a state widen it.
+   */
+  drawShadow(pos: Vec2, strength = 1, widthScale = 1): void {
+    if (strength <= 0.02) return;
+    const { ctx, scale } = this;
+    const r = 16 * scale * widthScale;
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    ctx.translate(pos.x, pos.y + 1);          // sit tight under the feet (not floating below)
+    ctx.scale(1, 0.26);                       // flatten the disc into a ground ellipse
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
+    g.addColorStop(0, `rgba(12,10,22,${0.55 * strength})`);
+    g.addColorStop(0.55, `rgba(12,10,22,${0.34 * strength})`);
+    g.addColorStop(1, "rgba(12,10,22,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   /** Draw `frame` with feet anchored at `pos`. */
   draw(frame: FrameMeta, pos: Vec2, faceLeft: boolean, o: DrawOpts = {}): void {
     const { ctx, scale, cell } = this;

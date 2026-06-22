@@ -34,7 +34,10 @@ export class InputController {
     });
     window.bridge.onScrollActivity((rot: number) => {
       if (rot) this.scrollDir = rot > 0 ? 1 : -1;   // +1 = down, -1 = up
-      this.scrollEnergy = Math.min(1.4, this.scrollEnergy + 0.5);
+      // a single wheel notch should give an obvious, lingering reaction (not a
+      // ~0.1s flash) — generous energy + a slow decay below keeps the cat
+      // playing with the yarn for ~0.7s after the last tick.
+      this.scrollEnergy = Math.min(2.2, this.scrollEnergy + 0.8);
     });
   }
 
@@ -57,7 +60,7 @@ export class InputController {
   /** Call once per frame to decay transient signals. */
   update(dt: number): void {
     this.keyEnergy = Math.max(0, this.keyEnergy - dt * 1.2);
-    this.scrollEnergy = Math.max(0, this.scrollEnergy - dt * 1.5);
+    this.scrollEnergy = Math.max(0, this.scrollEnergy - dt * 0.8);
     // cursor speed decays if no movement events arrive
     this.cursorSpeed *= Math.max(0, 1 - dt * 4);
     // drop keystroke timestamps older than 1s
@@ -79,7 +82,7 @@ export class InputController {
   /** ms since the cursor last actually moved (for the hunt give-up timer) */
   cursorIdleMs(): number { return performance.now() - this.lastMoveT; }
   isCursorSlow(threshold = 100): boolean { return this.cursorSpeed < threshold; }
-  isScrolling(): boolean { return this.scrollEnergy > 0.3; }
+  isScrolling(): boolean { return this.scrollEnergy > 0.25; }
   /** current scroll intensity 0..1.4 (for the spinning yarn-ball speed). */
   scrollPower(): number { return this.scrollEnergy; }
 }

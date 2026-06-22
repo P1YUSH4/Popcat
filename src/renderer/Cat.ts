@@ -54,7 +54,6 @@ export class Cat {
   private pomoChip: HTMLDivElement | null = null;
   private meetingChip: HTMLDivElement | null = null;
   private timersVisible = false;
-  private lastClear: { x: number; y: number; w: number; h: number } | null = null;
   // yarn ball the cat plays with while scrolling (runtime physics)
   private yarnAngle = 0;   // current spin
   private yarnSpin = 0;    // extra spin from bats (decays)
@@ -201,6 +200,29 @@ export class Cat {
   private catHitbox(pos: Vec2): { x: number; y: number; w: number; h: number } {
     return this.renderer.isIllustrated ? this.renderer.illuHitbox(pos) : this.renderer.hitbox(pos);
   }
+  private visibleHitbox(): { x: number; y: number; w: number; h: number } {
+    let box = this.catHitbox(this.phys.pos);
+    if (this.timersVisible) {
+      const p = this.phys.pos;
+      const top = p.y - this.headOff - 64, left = p.x - 85, right = p.x + 85;
+      const x = Math.min(box.x, left), y = Math.min(box.y, top);
+      box = { x, y, w: Math.max(box.x + box.w, right) - x, h: box.y + box.h - y };
+    }
+    if (this.behavior.peekMode) {
+      // peeking past the RIGHT edge: clamp the hitbox to the visible (on-screen)
+      // left sliver so the cursor still registers over the peeking head.
+      const W = window.innerWidth;
+      const x0 = Math.max(0, box.x), x1 = Math.min(box.x + box.w, W);
+      const visW = x1 - x0;
+      if (visW < 10) {
+        const strip = 32;
+        box = { x: W - strip, y: box.y, w: strip, h: box.h };
+      } else {
+        box = { x: x0, y: box.y, w: Math.max(10, visW), h: box.h };
+      }
+    }
+    return box;
+  }
   /** demo: toss the cat with a random upward velocity (used by /throw). */
   tossDemo(): void { this.behavior.throwCat({ x: (Math.random() * 2 - 1) * 700, y: -1100 - Math.random() * 400 }); }
 
@@ -225,6 +247,18 @@ export class Cat {
     this.syncAffectState();
   }
 
+  /** True when the cat needs full 60fps (motion, drag, effects). False when it's
+   *  calmly looping (sit / idle / sleep with no movement) so the frame loop can
+   *  drop to ~30fps and save CPU/GPU during focus work or while you're away. */
+  busy(): boolean {
+    const s = this.state();
+    const calm = s === "SIT" || s === "IDLE" || s === "LOOK_AROUND" || s === "SLEEP" || s === "LIE_DOWN";
+    if (!calm || this.dragging) return true;
+    if (this.yarnVis > 0.01) return true;
+    if (this.particles.bounds() !== null) return true;
+    return Math.hypot(this.phys.vel.x, this.phys.vel.y) > 4;
+  }
+
   /** push the mood snapshot to the main process (~1Hz) so the local control
    *  server can serve it on GET /state — no screenshots, just rhythm + mood. */
   private syncAffectState(): void {
@@ -245,7 +279,7 @@ export class Cat {
       coats: COATS.map((c) => ({
         name: c.name, label: c.label, unlocked: unlocked.has(c.name),
         need: coatRequirement(c.name) ?? null,
-        color: Object.values(c.map)[0] ?? "#2A2838",
+        color: Object.values(c.map)[0] ?? "#2E2B3C",
       })),
       accessory: this.renderer.accessory,
       accessories: ACCESSORIES.map((a) => ({
@@ -329,32 +363,13 @@ export class Cat {
     // Clear only the area around the cat (union of last + current), not the
     // whole full-screen canvas — big idle-CPU win. Generous margin covers the
     // sprite cell, particles, the yarn ball, and squash/stretch overshoot.
-    const p = this.phys.pos;
-    let cur = { x: p.x - 150, y: p.y - 215, w: 300, h: 265 };
-    const id = this.renderer.illuDims();
-    if (id) {
-      // the painted cat is bigger than the pixel box; size the clear region to
-      // its full extent + margin for bob/squash/tilt so it never leaves a trail
-      const hw = id.w / 2 + 50, top = p.y - id.h - 60;
-      cur = { x: p.x - hw, y: top, w: hw * 2, h: id.h + 110 };
-    }
-    // particles (confetti/hearts/steam) can fly well outside the cat box — fold
-    // their bounding box in so they get cleared next frame and don't leave marks
-    const pb = this.particles.bounds();
-    if (pb) {
-      const x0 = Math.min(cur.x, pb.x), y0 = Math.min(cur.y, pb.y);
-      const x1 = Math.max(cur.x + cur.w, pb.x + pb.w), y1 = Math.max(cur.y + cur.h, pb.y + pb.h);
-      cur = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
-    }
-    if (this.lastClear) {
-      const x0 = Math.min(cur.x, this.lastClear.x), y0 = Math.min(cur.y, this.lastClear.y);
-      const x1 = Math.max(cur.x + cur.w, this.lastClear.x + this.lastClear.w);
-      const y1 = Math.max(cur.y + cur.h, this.lastClear.y + this.lastClear.h);
-      this.renderer.clearRegion(x0, y0, x1 - x0, y1 - y0);
-    } else {
-      this.renderer.clearRegion(cur.x, cur.y, cur.w, cur.h);
-    }
-    this.lastClear = cur;
+    // Full-frame clear. A region-only clear is a micro-optimisation that can
+    // leave "trails" — a stray accessory / yarn ball / particle drawn just
+    // outside the moving clear window stays on the canvas (e.g. a detached hat
+    // floating away from the cat). Clearing the whole transparent canvas each
+    // frame is cheap (one GPU clear; we still only draw a single small sprite)
+    // and makes trails impossible.
+    this.renderer.clear();
     const frame = this.anim.frame();
     const faceLeft = this.behavior.facingLeft();
     const opts = this.visualOpts();
@@ -363,6 +378,14 @@ export class Cat {
       // painting has its own eyes, so no runtime pupils.
       this.renderer.drawIllustrated(this.phys.pos, faceLeft, opts);
     } else {
+      // grounded contact shadow first (faint while held/airborne, wider when
+      // the body squashes low) so the cat sits ON the desktop, not floating.
+      const s = this.state();
+      let shadow = 1;
+      if (this.dragging) shadow = 0.32;
+      else if (s === "FALL" || s === "JUMP" || s === "PEEK") shadow = 0.5;
+      const wide = 1 + Math.max(0, 1 - (opts.sy ?? 1)) * 2.2;   // squash spreads it
+      this.renderer.drawShadow(this.phys.pos, shadow, wide);
       this.renderer.draw(frame, this.phys.pos, faceLeft, opts);
       // eyes track the cursor ONLY in follow mode; otherwise they stay forward
       const track = this.behavior.autonomous;
@@ -399,7 +422,8 @@ export class Cat {
     if (s === "HUNT") { o.sy = 0.85; o.sx = 1.06; }
     if (s === "WALK") o.bob = Math.sin(now * 0.012) * 2;
     if (s === "OVERHEAT") o.tint = true;
-    if (s === "PEEK") o.clipTopHalf = true;
+    // PEEK no longer clips — the cat sits past the right edge and is clipped by
+    // the screen edge naturally, so it reads as peeking in from the side.
     // (no DRAG stretch — the cat keeps its normal proportions while dragged)
     if (s === "SHAKE") {
       const decay = this.dragging ? 1 : Math.max(0, 1 - (now - this.shakeT0) / 400);
@@ -439,41 +463,10 @@ export class Cat {
     const now = performance.now();
     if (now - this.lastHitboxSent < 60) return; // ~16fps throttle
     this.lastHitboxSent = now;
-    let box = this.catHitbox(this.phys.pos);
-    // when timer chips are shown, widen the interactive region upward to cover
-    // them so their ✕ buttons are clickable (window isn't click-through there)
-    if (this.timersVisible) {
-      const p = this.phys.pos;
-      const top = p.y - this.headOff - 64, left = p.x - 85, right = p.x + 85;
-      const x = Math.min(box.x, left), y = Math.min(box.y, top);
-      box = { x, y, w: Math.max(box.x + box.w, right) - x, h: box.y + box.h - y };
-    }
+    const box = this.visibleHitbox();
     // convert canvas coords -> screen coords using the display origin held in InputController
     const ox = this.input.cursorScreen.x - this.input.cursor.x;
     const oy = this.input.cursorScreen.y - this.input.cursor.y;
-    // If we're parked in peek mode the sprite is partially clipped at the
-    // screen edge — ensure the hitbox reflects the visible portion so clicks
-    // on the head still register (otherwise the window remains click-through).
-    try {
-      const winH = window.innerHeight;
-      if ((this.behavior as any)?.peekMode) {
-        // compute visible overlap with the viewport
-        const visTop = Math.max(0, Math.min(box.y + box.h, winH) - Math.max(box.y, 0));
-        if (visTop < 8) {
-          // nothing visible (feet pushed off) — create a small head-only
-          // hitbox aligned to the bottom edge so the head remains clickable.
-          const headH = Math.round(44 * this.renderer.scale);
-          const headY = Math.max(0, winH - headH - 2);
-          box = { x: box.x, y: headY, w: box.w, h: headH };
-        } else {
-          // clamp the hitbox to the visible portion
-          const y0 = Math.max(box.y, 0);
-          const y1 = Math.min(box.y + box.h, winH);
-          box = { x: box.x, y: y0, w: box.w, h: Math.max(8, y1 - y0) };
-        }
-      }
-    } catch { /* ignore in weird embed contexts */ }
-
     window.bridge.setHitbox({ x: box.x + ox, y: box.y + oy, w: box.w, h: box.h });
   }
 
@@ -521,7 +514,7 @@ export class Cat {
 
   private installDragHandlers(canvas: HTMLCanvasElement): void {
     const overCat = (e: MouseEvent): boolean => {
-      const hb = this.catHitbox(this.phys.pos);
+      const hb = this.visibleHitbox();
       return e.clientX >= hb.x && e.clientX <= hb.x + hb.w &&
              e.clientY >= hb.y && e.clientY <= hb.y + hb.h;
     };
@@ -530,7 +523,9 @@ export class Cat {
       if (!overCat(e)) return;
       // click cat to dismiss a meow bubble or to bring it out of peek mode
       if (this.state() === "MEOW") { this.behavior.dismissMeow(); return; }
-      if (this.behavior.peekMode) { this.behavior.revealFromPeek(); return; }
+      // grabbing the cat while it's peeking pulls it out AND stops peeking, so
+      // it can always be picked up and repositioned (no "stuck at the edge").
+      if (this.behavior.peekMode) this.behavior.setPeek(false);
       this.dragging = true;
       this.dragLastX = e.clientX;
       this.dragDir = 0;

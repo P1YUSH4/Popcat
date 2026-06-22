@@ -33,10 +33,10 @@ OUT_DIR = os.path.normpath(os.path.join(HERE, "..", "assets", "sprites"))
 # ---- palette: COMNYANG style (white cat, grey ears/tail, pink collar+bell) --
 T       = (0, 0, 0, 0)
 # Jiji-style black cat (Ghibli): near-black fur, big bright eyes, pink nose/collar.
-OUTLINE   = (164, 160, 188, 255)  # LIGHT cool-grey rim -> the black cat stays readable on dark AND light backgrounds (Ghibli backlight)
-BODY      = (42, 40, 56, 255)     # near-black fur
-SHADOW    = (28, 26, 40, 255)     # deeper fur shadow
-BELLY     = (64, 61, 82, 255)     # subtle lighter fur tone (gives form on the black body)
+OUTLINE   = (150, 148, 176, 255)  # softer cool-grey rim -> readable on dark AND light backgrounds, less "stickered"
+BODY      = (46, 43, 60, 255)     # near-black fur (a touch warmer + deeper)
+SHADOW    = (24, 22, 36, 255)     # deeper fur shadow -> stronger form
+BELLY     = (78, 74, 100, 255)    # clearer lighter fur tone -> the black body reads ROUND, not flat
 EYE       = (30, 28, 44, 255)     # dark pupil + on-sclera detail
 SCLERA    = (228, 246, 232, 255)  # big bright eyes (pale mint) — Jiji's signature; visible on black fur
 ACCENT    = (250, 152, 178, 255)  # pink: nose / inner ear / collar
@@ -114,6 +114,10 @@ def draw_pose(ear=0, tail=0, eyestate="open", mouth="smile",
     R(d, 23, 26 + hy, 40, 28 + hy, BELLY)
     # head shadow (right side)
     R(d, 41, 14 + hy, 42, 25 + hy, SHADOW)
+    # upper-left rim light: a thin diagonal catch along the head curve so the
+    # forehead reads ROUND (soft top-left key light), not a flat black disc
+    P(d, 21, 15 + hy, BELLY); P(d, 22, 14 + hy, BELLY)
+    P(d, 23, 13 + hy, BELLY); P(d, 24, 12 + hy, BELLY)
 
     # ---------- body (small) ----------
     by = 31 + hy

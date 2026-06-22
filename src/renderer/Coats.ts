@@ -3,12 +3,15 @@
  * different-coloured cat is just an exact colour remap of the fur pixels; the
  * bright eyes, rim outline, nose-pink and collar are left untouched. No new art.
  *
- * Fur palette in pao.png (Jiji black cat): base #2A2838, hi #403D52, shadow #1C1A28.
+ * Fur palette in pao.png (Jiji black cat): base #2E2B3C, hi #4E4A64, shadow #181624.
+ * These MUST match the BODY/BELLY/SHADOW constants in tools/gen_companion.py —
+ * the remap is an exact colour match, so if the generator palette changes, update
+ * these too or coats silently match zero pixels.
  * Variants stay DARK/MID-tone so the pale eyes keep reading against the fur.
  */
 export interface Coat { name: string; label: string; map: Record<string, string>; }
 
-const FUR = { base: "#2A2838", hi: "#403D52", lo: "#1C1A28" };
+const FUR = { base: "#2E2B3C", hi: "#4E4A64", lo: "#181624" };
 const coat = (name: string, label: string, base: string, hi: string, lo: string): Coat => ({
   name, label, map: { [FUR.base]: base, [FUR.hi]: hi, [FUR.lo]: lo },
 });

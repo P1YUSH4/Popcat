@@ -64,12 +64,16 @@ async function main(): Promise<void> {
   // arcs, squash/stretch) is smooth — sprite frame-stepping is duration-based,
   // but physics/position update per render frame, so the old 33fps cap made
   // movement choppy. The region-only clear keeps the per-frame cost tiny.
-  const MIN_DT = 1000 / 60;
+  // Adaptive frame rate: full 60fps when there's motion/effects, but drop to
+  // ~30fps when the cat is calmly idle/asleep — halves idle CPU/GPU without any
+  // visible choppiness on the slow breathing loop.
+  const HI = 1000 / 60, LO = 1000 / 30;
   let last = performance.now();
   function frame(now: number): void {
     requestAnimationFrame(frame);
+    const cap = cat.busy() ? HI : LO;
     const elapsed = now - last;
-    if (elapsed < MIN_DT) return;            // skip frames faster than the cap
+    if (elapsed < cap) return;               // skip frames faster than the cap
     last = now;
     cat.update(Math.min(0.05, elapsed / 1000)); // clamp dt (tab stalls)
     cat.render();
