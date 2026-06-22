@@ -376,6 +376,14 @@ function openSettings() {
     webPreferences: { preload: join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
   });
   settingsWin.setMenuBarVisibility(false);
+  // The transparent overlay is always-on-top at "screen-saver" level, and the
+  // user's foreground app can sit above a plain window — so the settings window
+  // was opening UNREACHABLE behind them (clicks landed on the app in front).
+  // Put it at the same top level and bring it to the front + focus on load.
+  settingsWin.setAlwaysOnTop(true, "screen-saver");
+  settingsWin.webContents.on("did-finish-load", () => {
+    if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.moveTop(); settingsWin.focus(); }
+  });
   settingsWin.loadURL("app://bundle/settings.html");
   settingsWin.on("closed", () => { settingsWin = null; });
 }
