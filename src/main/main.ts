@@ -2,7 +2,7 @@ import { app, BrowserWindow, screen, ipcMain, Tray, Menu, protocol, nativeImage 
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 
 // Allow timer-triggered WebAudio (reminder chimes) to play without a click.
@@ -44,7 +44,7 @@ function virtualBounds() {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
-function createWindow() {
+async function createWindow() {
   const { x, y, width, height } = virtualBounds();
 
   win = new BrowserWindow({
@@ -83,11 +83,18 @@ function createWindow() {
 
   // a monitor was added/removed/rearranged -> resize the overlay to the new
   // virtual desktop and tell the renderer its new origin/size.
+  // display-metrics-changed fires rapidly (e.g. during DPI transitions), so
+  // debounce with a short timer to coalesce the burst into one reflow.
+  let reflowTimer: NodeJS.Timeout | null = null;
   const reflow = () => {
-    if (!win || win.isDestroyed()) return;
-    const b = virtualBounds();
-    win.setBounds(b);
-    win.webContents.send("display-info", { originX: b.x, originY: b.y, width: b.width, height: b.height });
+    if (reflowTimer) clearTimeout(reflowTimer);
+    reflowTimer = setTimeout(() => {
+      reflowTimer = null;
+      if (!win || win.isDestroyed()) return;
+      const b = virtualBounds();
+      win.setBounds(b);
+      win.webContents.send("display-info", { originX: b.x, originY: b.y, width: b.width, height: b.height });
+    }, 60);
   };
   screen.on("display-added", reflow);
   screen.on("display-removed", reflow);
@@ -95,8 +102,8 @@ function createWindow() {
 
   startCursorLoop();
   startKeyboardHook();
-  startWindowWatch();
-  startWheelWatch();
+  await startWindowWatch();
+  await startWheelWatch();
 }
 
 // ---- optional foreground-window watcher (ambient perception) -------------
@@ -105,7 +112,7 @@ function createWindow() {
 // dependency-free (a single long-lived PowerShell calling Win32). If it can't
 // start, perception simply runs without the app signal.
 let fgProc: ChildProcess | null = null;
-function startWindowWatch() {
+async function startWindowWatch(): Promise<void> {
   let cmd: string, args: string[];
   if (process.platform === "win32") {
     const script = [
@@ -125,12 +132,11 @@ function startWindowWatch() {
       " if($t -ne $last){$last=$t;[Console]::Out.WriteLine($t)}",
       " Start-Sleep -Milliseconds 2000}",
     ].join("\n");
-    try {
-      const file = join(tmpdir(), "pao-fgwatch.ps1");
-      writeFileSync(file, script, "utf8");
-    } catch (e) { console.warn("[pao] window watcher failed:", (e as Error).message); return; }
+    const file = join(tmpdir(), "pao-fgwatch.ps1");
+    try { await writeFile(file, script, "utf8"); }
+    catch (e) { console.warn("[pao] window watcher failed:", (e as Error).message); return; }
     cmd = "powershell";
-    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(tmpdir(), "pao-fgwatch.ps1")];
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file];
   } else if (process.platform === "darwin") {
     // macOS: poll the frontmost app name (needs Automation permission for
     // System Events on first run). App name only — never window content.
@@ -168,7 +174,7 @@ function startWindowWatch() {
 // only — never window content. (Trackpads emit a flood of tiny inertial deltas,
 // so forwarding is throttled below.)
 let wheelProc: ChildProcess | null = null;
-function startWheelWatch() {
+async function startWheelWatch(): Promise<void> {
   if (process.platform !== "win32") return;   // uiohook covers wheel on mac/linux
   const cs = `
 using System;
@@ -255,9 +261,10 @@ public class WheelRaw {
 }`;
   const script = ["$ErrorActionPreference='SilentlyContinue'", "Add-Type @'", cs, "'@",
     "[WheelRaw]::Run([int]($env:PAO_PARENT))"].join("\n");
+  const file = join(tmpdir(), "pao-wheel.ps1");
+  try { await writeFile(file, script, "utf8"); }
+  catch (e) { console.warn("[pao] scroll watcher failed:", (e as Error).message); return; }
   try {
-    const file = join(tmpdir(), "pao-wheel.ps1");
-    writeFileSync(file, script, "utf8");
     wheelProc = spawn("powershell", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file],
       { windowsHide: true, env: { ...process.env, PAO_PARENT: String(process.pid) } });
     wheelProc.stdout?.setEncoding("utf8");
@@ -499,9 +506,9 @@ function startControlServer() {
         win?.webContents.send("do", `meeting:${isNaN(m) ? 0 : m}`);
       }
       else if (path.startsWith("/peek")) {
-        // /peek?on=1 or /peek?on=0
+        // GET /peek or /peek?on=1 -> on; /peek?on=0 or /peek?on=off -> off
         const on = new URL(req.url || "", "http://x").searchParams.get("on");
-        const val = (on === "1" || on === "on") ? "on" : "off";
+        const val = (on === null || on === "1" || on === "on") ? "on" : "off";
         win?.webContents.send("do", `peek:${val}`);
       }
       else if (path.startsWith("/settings")) openSettings();
@@ -529,7 +536,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", () => { /* already running; nothing to focus (overlay is unfocusable) */ });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     // Serve bundled files (dist/) over app://bundle/...
     protocol.registerFileProtocol("app", (request, callback) => {
       const url = new URL(request.url);
@@ -540,7 +547,7 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     if (process.platform === "darwin") app.dock?.hide();
-    createWindow();
+    await createWindow();
     createTray();
     startControlServer();
   });

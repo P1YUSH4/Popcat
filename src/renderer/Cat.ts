@@ -256,7 +256,7 @@ export class Cat {
     if (!calm || this.dragging) return true;
     if (this.yarnVis > 0.01) return true;
     if (this.particles.bounds() !== null) return true;
-    return Math.hypot(this.phys.vel.x, this.phys.vel.y) > 4;
+    return this.phys.speed() > 4;
   }
 
   /** push the mood snapshot to the main process (~1Hz) so the local control

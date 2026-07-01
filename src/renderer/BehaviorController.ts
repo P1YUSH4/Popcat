@@ -298,7 +298,7 @@ export class BehaviorController {
 
     // a natural "thinking" pause ends on its own. (The command-driven
     // startThinking() leaves ponderUntil at 0, so it still holds indefinitely.)
-    if (this.ponderUntil && this.now > this.ponderUntil && this.sm.state === "THINK") {
+    if (this.ponderUntil && this.now >= this.ponderUntil && this.sm.state === "THINK") {
       this.ponderUntil = 0; this.sm.unlock(); this.toIdle();
     }
 
@@ -399,11 +399,10 @@ export class BehaviorController {
 
   /** states active scroll/type must NOT interrupt — you're holding the cat
    *  (drag/shake) or it's airborne (fall). Everything else (sleep, fidgets,
-   *  ponder, reminder one-shots) yields to active input. */
-  private hardState(): boolean {
-    const s = this.sm.state;
-    return s === "DRAG" || s === "SHAKE" || s === "FALL";
-  }
+   *  ponder, reminder one-shots) yields to active input.
+   *  Keep this set in sync with any new physical/drag states added to StateMachine. */
+  private static readonly HARD_STATES = new Set(["DRAG", "SHAKE", "FALL"]);
+  private hardState(): boolean { return BehaviorController.HARD_STATES.has(this.sm.state); }
   private syncAnim(): void { this.anim.play(STATE_ANIM[this.sm.state]); }
   facingLeft(): boolean { return !this.dragging && this.phys.vel.x < -8; }
   isCrouching(): boolean { return this.sm.state === "HUNT"; }
