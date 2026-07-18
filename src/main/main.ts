@@ -1,4 +1,5 @@
-import { app, BrowserWindow, screen, ipcMain, Tray, Menu, protocol, nativeImage } from "electron";
+import { app, BrowserWindow, screen, ipcMain, Tray, Menu, protocol, nativeImage,
+  systemPreferences, shell, dialog, globalShortcut } from "electron";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -24,6 +25,9 @@ protocol.registerSchemesAsPrivileged([
 let win: BrowserWindow | null = null;
 let settingsWin: BrowserWindow | null = null;
 let tray: Tray | null = null;
+// rebuilds the tray menu so it reflects live state (e.g. input hook on/off);
+// assigned once the tray exists.
+let refreshTray: () => void = () => { /* set in createTray */ };
 
 // Cat hitbox in screen coordinates, kept in sync by the renderer so we can
 // make the transparent overlay click-through everywhere EXCEPT over the cat.
@@ -304,11 +308,16 @@ public class WheelRaw {
 
 // ---- global cursor polling (no native deps) -----------------------------
 let cursorTimer: NodeJS.Timeout | null = null;
+let cursorTick = 0;
 function startCursorLoop() {
   cursorTimer = setInterval(() => {
     // bail if the window is gone or being torn down (avoids
     // "Object has been destroyed" when the timer outlives the window)
     if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+    // Sample at half rate (30Hz) while the cursor is away from the cat and not
+    // dragging — the idle/away case — to cut constant CPU/battery. Snap to full
+    // 60Hz the instant you're interacting so grabs and clicks stay responsive.
+    if (!interacting && !draggingActive && (++cursorTick & 1)) return;
     const p = screen.getCursorScreenPoint();
     win.webContents.send("cursor", { x: p.x, y: p.y });
 
@@ -336,28 +345,88 @@ function startCursorLoop() {
   }, 1000 / 60);
 }
 
-// ---- optional global keyboard hook --------------------------------------
+// ---- global input hook (keyboard + scroll) ------------------------------
+// On Windows the Raw Input watcher (startWheelWatch) already delivers BOTH
+// keystrokes and wheel/trackpad; uiohook covers mac/linux. On macOS the hook
+// needs Accessibility permission, which the user grants AFTER launch — so we
+// prompt, then poll and switch the reactions on the instant it's granted
+// (no relaunch needed in the common case).
 let keyboardHookActive = false;
-function startKeyboardHook() {
-  // On Windows the Raw Input watcher (startWheelWatch) already delivers BOTH
-  // keystrokes and wheel/trackpad reliably; uiohook delivers neither here, so
-  // skip it to avoid wasted hooks and any double-counting.
-  if (process.platform === "win32") { keyboardHookActive = true; return; }
-  try {
-    // optionalDependency: only present if it installed/compiled successfully
-    const { uIOhook } = require("uiohook-napi");
-    uIOhook.on("keydown", () => win?.webContents.send("key-activity"));
-    uIOhook.on("wheel", (e: { rotation?: number }) =>
-      win?.webContents.send("scroll-activity", e?.rotation ?? 0));
-    uIOhook.start();
-    keyboardHookActive = true;
-    app.on("before-quit", () => { try { uIOhook.stop(); } catch { /* noop */ } });
-    console.log("[pao] global keyboard hook active");
-  } catch (e) {
-    keyboardHookActive = false;
-    console.warn("[pao] uiohook-napi unavailable — typing/scroll reactions are OFF "
-      + "(drag, hover, pet, sleep still work). Reinstall with: npm i uiohook-napi", (e as Error).message);
+type Uio = { on: (ev: string, cb: (e: { rotation?: number }) => void) => void; start: () => void; stop: () => void };
+let uio: Uio | null = null;
+let uioListenersAdded = false;
+
+/** Load the optional native module once (present only if it compiled). */
+function loadUio(): Uio | null {
+  if (uio) return uio;
+  try { uio = require("uiohook-napi").uIOhook as Uio; } catch { uio = null; }
+  return uio;
+}
+/** Attach listeners (once) and attempt to start the hook. Returns success. */
+function startUio(): boolean {
+  const u = loadUio();
+  if (!u) return false;
+  if (!uioListenersAdded) {
+    u.on("keydown", () => win?.webContents.send("key-activity"));
+    u.on("wheel", (e) => win?.webContents.send("scroll-activity", e?.rotation ?? 0));
+    uioListenersAdded = true;
   }
+  try { u.start(); keyboardHookActive = true; return true; }
+  catch { return false; }   // typically a missing OS permission (mac Accessibility)
+}
+
+function openAccessibilityPane(): void {
+  shell.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+}
+
+let accessibilityTimer: NodeJS.Timeout | null = null;
+function startKeyboardHook() {
+  if (process.platform === "win32") { keyboardHookActive = true; return; }
+
+  if (startUio()) { console.log("[pao] global input hook active (keyboard + scroll)"); refreshTray(); return; }
+
+  if (process.platform === "darwin") {
+    // Register Pao in the Accessibility list + pop the system prompt, then watch
+    // for the grant and light the reactions up live.
+    const already = systemPreferences.isTrustedAccessibilityClient(true);
+    console.warn("[pao] typing/scroll reactions need Accessibility permission "
+      + "(System Settings → Privacy & Security → Accessibility). Watching for the grant…");
+    if (!already) {
+      dialog.showMessageBox({
+        type: "info",
+        title: "Let Pao feel your typing",
+        message: "Pao reacts to your typing and scrolling — turn it on in one step.",
+        detail: "Open System Settings → Privacy & Security → Accessibility, then switch ON "
+              + "\"Electron\" (Pao, once packaged). Pao starts reacting the moment you do — no restart needed.",
+        buttons: ["Open Accessibility Settings", "Later"],
+        defaultId: 0, cancelId: 1,
+      }).then((r) => { if (r.response === 0) openAccessibilityPane(); }).catch(() => { /* noop */ });
+    }
+    let checks = 0;
+    accessibilityTimer = setInterval(() => {
+      if (++checks > 200) { if (accessibilityTimer) clearInterval(accessibilityTimer); accessibilityTimer = null; return; } // give up after ~5 min
+      if (!systemPreferences.isTrustedAccessibilityClient(false)) return;
+      // trusted now — stop polling and start; if start still fails, a relaunch is needed
+      if (accessibilityTimer) { clearInterval(accessibilityTimer); accessibilityTimer = null; }
+      if (startUio()) {
+        console.log("[pao] Accessibility granted — typing/scroll reactions are now ON");
+        refreshTray();
+      } else {
+        dialog.showMessageBox({
+          type: "info", title: "Almost there",
+          message: "Accessibility is on — relaunch Pao to activate typing/scroll reactions.",
+          detail: "Quit from the 🐾 menu-bar icon, then start Pao again.",
+          buttons: ["OK"],
+        }).catch(() => { /* noop */ });
+      }
+    }, 1500);
+    return;
+  }
+
+  // linux (or a failed native build): reactions off, everything else still works
+  keyboardHookActive = false;
+  console.warn("[pao] uiohook-napi unavailable — typing/scroll reactions are OFF "
+    + "(drag, hover, pet, sleep still work). Reinstall with: npm i uiohook-napi");
 }
 
 // renderer pushes the cat hitbox every frame (throttled on its side)
@@ -395,13 +464,14 @@ function openSettings() {
   settingsWin.on("closed", () => { settingsWin = null; });
 }
 
-function createTray() {
-  try {
-    const icon = nativeImage.createFromPath(join(__dirname, "assets/sprites/tray.png"));
-    tray = new Tray(icon.isEmpty() ? join(__dirname, "assets/sprites/tray.png") : icon);
-    const menu = Menu.buildFromTemplate([
+function buildTrayMenu(): Menu {
+  const macNeedsAccess = process.platform === "darwin" && !keyboardHookActive;
+  const template: Electron.MenuItemConstructorOptions[] = [
       { label: "Pao is here 🐾", enabled: false },
-      { label: keyboardHookActive ? "⌨ typing/scroll: on" : "⌨ typing/scroll: OFF (no hook)", enabled: false },
+      { label: keyboardHookActive ? "⌨ typing/scroll: on" : "⌨ typing/scroll: OFF (needs permission)", enabled: false },
+      ...(macNeedsAccess
+        ? [{ label: "Enable keyboard reactions…", click: () => openAccessibilityPane() }]
+        : []),
       { type: "separator" },
       { label: "Stretch now", click: () => win?.webContents.send("do", "stretch") },
       { label: "Jump", click: () => win?.webContents.send("do", "jump") },
@@ -463,10 +533,20 @@ function createTray() {
       { label: "Mute sounds", type: "checkbox", checked: false,
         click: (mi) => win?.webContents.send("do", `mute:${mi.checked ? "on" : "off"}`) },
       { type: "separator" },
-      { label: "Quit", click: () => app.quit() },
-    ]);
+      { label: "Quit  (⌥⌘Q)", click: () => app.quit() },
+  ];
+  return Menu.buildFromTemplate(template);
+}
+
+function createTray() {
+  try {
+    const icon = nativeImage.createFromPath(join(__dirname, "assets/sprites/tray.png"));
+    // menu-bar icons should be monochrome templates so they adapt to light/dark
+    if (process.platform === "darwin" && !icon.isEmpty()) icon.setTemplateImage(true);
+    tray = new Tray(icon.isEmpty() ? join(__dirname, "assets/sprites/tray.png") : icon);
     tray.setToolTip("Pao");
-    tray.setContextMenu(menu);
+    refreshTray = () => { try { tray?.setContextMenu(buildTrayMenu()); } catch { /* noop */ } };
+    refreshTray();
   } catch { /* tray icon optional */ }
 }
 
@@ -550,6 +630,11 @@ if (!app.requestSingleInstanceLock()) {
     await createWindow();
     createTray();
     startControlServer();
+
+    // With the dock hidden and the overlay unfocusable, the tray is the only way
+    // out — so also bind a global quit shortcut as a guaranteed escape hatch,
+    // reachable even if the tray icon ever fails to appear.
+    try { globalShortcut.register("CommandOrControl+Alt+Q", () => app.quit()); } catch { /* noop */ }
   });
 }
 
@@ -557,5 +642,8 @@ app.on("before-quit", () => {
   try { ctrl?.close(); } catch { /* noop */ }
   try { fgProc?.kill(); } catch { /* noop */ }
   try { wheelProc?.kill(); } catch { /* noop */ }
+  try { uio?.stop(); } catch { /* noop */ }
+  if (accessibilityTimer) { clearInterval(accessibilityTimer); accessibilityTimer = null; }
+  try { globalShortcut.unregisterAll(); } catch { /* noop */ }
 });
 app.on("window-all-closed", () => app.quit());
