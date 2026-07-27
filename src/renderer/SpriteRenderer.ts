@@ -27,7 +27,7 @@ export class SpriteRenderer {
   readonly scale: number;
   readonly cell: number;
 
-  constructor(canvas: HTMLCanvasElement, sheet: HTMLImageElement, meta: SpriteMeta) {
+  constructor(canvas: HTMLCanvasElement, sheet: CanvasImageSource, meta: SpriteMeta) {
     this.ctx = canvas.getContext("2d", { alpha: true })!;
     this.sheet = sheet;
     this.active = sheet;

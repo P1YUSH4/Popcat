@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "An original desktop pixel companion (Comnyang-inspired) built with Electron + TypeScript + Canvas.",
   "main": "dist/main.js",
+  "bin": {
+    "pao": "bin/pao.mjs"
+  },
   "scripts": {
     "gen:sprites": "python tools/gen_companion.py",
     "build": "node build.mjs",
@@ -14,6 +17,35 @@
   },
   "author": "",
   "license": "MIT",
+  "build": {
+    "appId": "com.pao.companion",
+    "productName": "Pao",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "asar": false,
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "build/icon.png"
+    },
+    "portable": {
+      "artifactName": "Pao-${version}-portable.exe"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity",
+      "artifactName": "Pao-${version}-${arch}.${ext}",
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] },
+        { "target": "zip", "arch": ["arm64", "x64"] }
+      ]
+    }
+  },
   "devDependencies": {
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3",
@@ -21,6 +53,7 @@
     "typescript": "^5.5.0"
   },
   "optionalDependencies": {
+    "get-windows": "^9.2.0",
     "uiohook-napi": "^1.5.4"
   },
   "build": {

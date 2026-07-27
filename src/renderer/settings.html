@@ -17,9 +17,11 @@
             padding: 14px; margin-bottom: 14px; }
     .row { display: flex; align-items: center; justify-content: space-between; margin: 8px 0; gap: 10px; }
     .row label { color: #555; }
-    input { width: 84px; padding: 5px 8px; border: 2px solid var(--line);
+    input, select { width: 84px; padding: 5px 8px; border: 2px solid var(--line);
             border-radius: 8px; font: inherit; text-align: right; }
+    select { width: auto; text-align: left; }
     input[type=text] { width: 150px; text-align: left; }
+    input[type=time] { width: 110px; text-align: left; }
     button { width: 100%; margin-top: 8px; padding: 9px; border: none; border-radius: 10px;
              font: 600 13px ui-sans-serif, sans-serif; color: var(--ink);
              background: var(--bell); cursor: pointer; }
@@ -91,7 +93,12 @@
 
   <div class="card">
     <h2>📅 Meeting reminder</h2>
-    <div class="row"><label>In (min)</label><input id="mins" type="number" min="0" value="10" /></div>
+    <div class="row"><label>When</label>
+      <select id="mode"><option value="in">In minutes</option><option value="at">At time</option></select>
+    </div>
+    <div class="row" id="rowIn"><label>In (min)</label><input id="mins" type="number" min="0" value="10" /></div>
+    <div class="row" id="rowAt" style="display:none"><label>At (HH:MM)</label><input id="at" type="time" value="15:00" /></div>
+    <div class="row"><label>Remind before (min)</label><input id="preMin" type="number" min="0" value="5" /></div>
     <div class="row"><label>Label</label><input id="label" type="text" value="Meeting" /></div>
     <button class="alt" id="setMeeting">Set reminder</button>
     <div class="ok" id="meetOk"></div>

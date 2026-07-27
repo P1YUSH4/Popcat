@@ -28,6 +28,9 @@ contextBridge.exposeInMainWorld("bridge", {
   // settings window -> main -> overlay (custom pomodoro / meeting)
   setPomodoro: (cfg: unknown) => ipcRenderer.send("set-pomodoro", cfg),
   setMeeting: (cfg: unknown) => ipcRenderer.send("set-meeting", cfg),
+  setPomoState: (s: { on: boolean; paused: boolean; phase: string }) => ipcRenderer.send("pomo-state", s),
+  onReact: (cb: (d: { type: string; msg: string }) => void) =>
+    ipcRenderer.on("react", (_e, d: { type: string; msg: string }) => cb(d)),
   onSetPomodoro: (cb: (cfg: PomodoroCfg) => void) =>
     ipcRenderer.on("set-pomodoro", (_e, cfg: PomodoroCfg) => cb(cfg)),
   onSetMeeting: (cb: (cfg: MeetingCfg) => void) =>
@@ -46,3 +49,16 @@ contextBridge.exposeInMainWorld("bridge", {
 
 export interface PomodoroCfg { focus: number; brk: number; long: number; every: number; start?: boolean; }
 export interface MeetingCfg { mins: number; label: string; }
+export interface PaoConfig {
+  name: string;
+  furId: string;
+  bellColor: string;
+  sound: { muted: boolean; volume: number };
+  sleepMin: number;
+  hydrationMin: number;
+  leisureNudge: boolean;
+  contextEnabled: boolean;
+  contextRules: { pattern: string; mode: string }[];
+  autostart: boolean;
+  firstRunDone: boolean;
+}

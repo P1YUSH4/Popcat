@@ -13,6 +13,14 @@ import { sound } from "./Sound";
 import { SpriteRenderer, type DrawOpts } from "./SpriteRenderer";
 import type { SpriteMeta, Vec2 } from "./types";
 
+type Rect = { x: number; y: number; w: number; h: number };
+/** Smallest rect covering both inputs (used to grow the per-frame clear region). */
+function unionRect(a: Rect, b: Rect): Rect {
+  const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y);
+  const x1 = Math.max(a.x + a.w, b.x + b.w), y1 = Math.max(a.y + a.h, b.y + b.h);
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
 /**
  * Top-level orchestrator. Owns every controller, runs the delta-time update +
  * render each frame, and exposes the public thinking API.
@@ -65,6 +73,7 @@ export class Cat {
 
   constructor(canvas: HTMLCanvasElement, sheet: HTMLImageElement, meta: SpriteMeta) {
     this.anim = new AnimationController(meta);
+    this.srcSheet = sheet;
     this.renderer = new SpriteRenderer(canvas, sheet, meta);
     this.behavior = new BehaviorController(this.anim, this.phys, this.input);
     this.perception = new Perception(this.input);
@@ -129,14 +138,61 @@ export class Cat {
   rest(): void { this.behavior.rest(); }
   celebrate(): void { this.behavior.doCelebrate(); }
   worried(): void { this.behavior.doWorried(); }
+  private static BUG_QUIPS = ["Ugh, a bug! 🐛", "Not again… 💢", "Who wrote this?! 😾",
+    "Squash it! 🐛", "Hisss… 🐛", "Seriously?! 💢", "It worked yesterday 🐛"];
+
+  /** dev-event reaction: play an animation for `type` and show an optional message. */
+  react(type: string, msg?: string): void {
+    let m = (msg || "").trim();
+    switch ((type || "").toLowerCase()) {
+      case "celebrate": case "pass": case "passed": case "success": case "green": case "pushed":
+        this.behavior.doCelebrate(); break;
+      case "frustrated": case "bug": case "annoyed": case "fail": case "failed": case "error": case "angry":
+        this.behavior.doAngry();
+        if (!m) m = Cat.BUG_QUIPS[Math.floor(Math.random() * Cat.BUG_QUIPS.length)];
+        break;
+      case "worried": case "concerned": case "red":
+        this.behavior.doWorried(); break;
+      case "think": case "thinking": case "working": case "run":
+        this.behavior.startThinking(); break;
+      case "confused": case "switch":
+        this.behavior.doConfused(); break;
+      default: this.behavior.answerReady(); break;   // alert / done
+    }
+    if (m) this.behavior.say(m, 5000);
+  }
   hydrate(): void { this.behavior.doHydration(); }
   startPomodoro(): void { this.behavior.startPomodoro(); }
   stopPomodoro(): void { this.behavior.stopPomodoro(); }
-  scheduleMeeting(mins: number, label?: string): void { this.behavior.scheduleMeeting(mins, label); }
+  scheduleMeeting(mins: number, label?: string, preMin?: number): void { this.behavior.scheduleMeeting(mins, label, preMin); }
+  scheduleMeetingAt(atMs: number, label?: string, preMin?: number): void { this.behavior.scheduleMeetingAt(atMs, label, preMin); }
   focusAlert(): void { this.behavior.doFocusAlert(); }   // demo
   configurePomodoro(cfg: { focus: number; brk: number; long: number; every: number; start?: boolean }): void {
     this.behavior.configurePomodoro(cfg.focus, cfg.brk, cfg.long, cfg.every);
     if (cfg.start) this.behavior.startPomodoro();
+  }
+  /** apply persisted settings (from main's config). */
+  applyConfig(cfg: import("./types").PaoConfig): void {
+    this.behavior.sleepMs = Math.max(10_000, cfg.sleepMin * 60_000);
+    this.behavior.hydrationMs = Math.max(0, cfg.hydrationMin) * 60_000;
+    this.behavior.leisureNudge = cfg.leisureNudge;
+    this.input.userRules = cfg.contextRules || [];
+    sound.muted = cfg.sound.muted;
+    sound.volume = cfg.sound.volume;
+    this.name = cfg.name || "Pao";
+    // repaint fur + bell from the original art (idempotent across changes)
+    this.renderer.setSheet(recolorSheet(this.srcSheet, cfg.furId || "classic", cfg.bellColor || "gold"));
+  }
+  pausePomodoro(): void { this.behavior.pausePomodoro(); }
+  resumePomodoro(): void { this.behavior.resumePomodoro(); }
+  skipPomodoro(): void { this.behavior.skipPomodoro(); }
+  /** Force-end any in-progress drag (called when main detects a global mouseup). */
+  cancelDrag(): void {
+    if (!this.dragging) return;
+    this.dragging = false;
+    this.dragReversals.length = 0;
+    this.behavior.setShaking(false);
+    this.behavior.endDrag();
   }
   stretch(): void { this.behavior.doStretch(); }
   meow(msg?: string): void { this.behavior.doMeow(msg); }
@@ -341,6 +397,15 @@ export class Cat {
   private get headOff(): number { return 34 * this.renderer.scale; }
   private state(): string { return this.behavior.sm.state; }
 
+  /** true when nothing dynamic is happening, so the loop can drop to a low fps
+   *  (the cat just sitting/sleeping) — big idle-CPU saving for an always-on app. */
+  lowActivity(): boolean {
+    if (this.dragging || this.behavior.sm.locked) return false;     // drag / one-shot anim
+    const s = this.state();
+    if (s !== "SIT" && s !== "SLEEP" && s !== "IDLE" && s !== "PEEK") return false;
+    return !this.particles.active() && this.yarnVis <= 0.01 && !this.bubbleEl;
+  }
+
   /** Emit particles based on the current state (logic only, no new frames). */
   private emitParticles(): void {
     const s = this.state();
@@ -455,7 +520,8 @@ export class Cat {
       }
       this.bubbleEl.textContent = text;
       this.bubbleEl.style.left = this.phys.pos.x + "px";
-      this.bubbleEl.style.top = (this.phys.pos.y - this.headOff - 30) + "px";
+      // sit the bubble above any timer chips so they don't overlap
+      this.bubbleEl.style.top = (this.phys.pos.y - this.headOff - 30 - this.timerRows * 24) + "px";
     } else if (this.bubbleEl) { this.bubbleEl.remove(); this.bubbleEl = null; }
   }
 
@@ -475,16 +541,19 @@ export class Cat {
     const b = this.behavior;
     const pomo = b.isPomoActive(), meet = b.isMeetingPending();
     this.timersVisible = pomo || meet;
+    this.timerRows = (pomo ? 1 : 0) + (meet ? 1 : 0);
     const base = this.phys.pos.y - this.headOff - 22;
     let row = 0;
     if (pomo) {
       if (!this.pomoChip) this.pomoChip = this.makeChip(() => this.behavior.stopPomodoro());
-      this.setChip(this.pomoChip, `🍅 ${b.pomoLabel()} ${this.mmss(b.pomoRemainingMs())}`, base - row * 24);
+      this.setChip(this.pomoChip, this.pomoChipText(), base - row * 24);
       row++;
     } else if (this.pomoChip) this.pomoChip.style.display = "none";
     if (meet) {
-      if (!this.meetingChip) this.meetingChip = this.makeChip(() => this.behavior.cancelMeeting());
-      this.setChip(this.meetingChip, `📅 ${b.meetingName} ${this.mmss(b.meetingRemainingMs())}`, base - row * 24);
+      if (!this.meetingChip) this.meetingChip = this.makeMeetingChip();
+      const snooze = this.meetingChip.querySelector(".snooze") as HTMLElement;
+      snooze.style.display = b.isRinging() ? "inline" : "none";   // snooze only while ringing
+      this.setChip(this.meetingChip, b.meetingChipText(), base - row * 24);
     } else if (this.meetingChip) this.meetingChip.style.display = "none";
   }
 
@@ -507,9 +576,37 @@ export class Cat {
     el.style.display = "flex";
   }
 
+  /** meeting chip has a 💤 snooze (while ringing) and an ✕ dismiss/cancel. */
+  private makeMeetingChip(): HTMLDivElement {
+    const el = document.createElement("div");
+    el.className = "timer-chip";
+    const label = document.createElement("span");
+    const snooze = document.createElement("span");
+    snooze.className = "x snooze"; snooze.textContent = "💤"; snooze.title = "Snooze 5 min";
+    snooze.addEventListener("mousedown", (e) => { e.stopPropagation(); this.behavior.snoozeMeeting(5); });
+    const x = document.createElement("span");
+    x.className = "x"; x.textContent = "✕";
+    x.addEventListener("mousedown", (e) => { e.stopPropagation(); this.behavior.cancelMeeting(); });
+    el.appendChild(label); el.appendChild(snooze); el.appendChild(x);
+    document.body.appendChild(el);
+    return el;
+  }
+
   private mmss(ms: number): string {
     const s = Math.ceil(ms / 1000);
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  }
+
+  private pomoChipText(): string {
+    const b = this.behavior;
+    const t = this.mmss(b.pomoRemainingMs());
+    const pause = b.isPomoPaused() ? "⏸ " : "";
+    if (b.pomoPhaseKind() === "work") {
+      const r = b.pomoRound();
+      return `${pause}🍅 Focus ${t} · ${r.done + 1}/${r.total}`;
+    }
+    const emoji = b.pomoPhaseKind() === "long" ? "😴" : "☕";
+    return `${pause}${emoji} ${b.pomoLabel()} ${t}`;
   }
 
   private installDragHandlers(canvas: HTMLCanvasElement): void {
@@ -521,6 +618,8 @@ export class Cat {
     const HOLD = 70; // cat hangs this far below the cursor (held by the scruff)
     canvas.addEventListener("mousedown", (e) => {
       if (!overCat(e)) return;
+      // click the cat to acknowledge a ringing meeting alarm
+      if (this.behavior.isRinging()) { this.behavior.ackMeeting(); return; }
       // click cat to dismiss a meow bubble or to bring it out of peek mode
       if (this.state() === "MEOW") { this.behavior.dismissMeow(); return; }
       // grabbing the cat while it's peeking pulls it out AND stops peeking, so
@@ -570,6 +669,10 @@ export class Cat {
       if (Math.hypot(this.dragVel.x, this.dragVel.y) > 700) this.behavior.throwCat({ ...this.dragVel });
       else this.behavior.endDrag();
     });
+    // Safety net from main's global mouse-up hook: if the window never received
+    // the mouseup (overlay went click-through mid-interaction), drop the drag
+    // here so it can't get stuck (which would freeze input/scroll).
+    window.bridge.onDragCancel(() => this.cancelDrag());
     // double-click the cat -> dizzy (NOT on single click or drag)
     canvas.addEventListener("dblclick", (e) => {
       if (!overCat(e)) return;

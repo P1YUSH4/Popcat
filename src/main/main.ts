@@ -9,9 +9,57 @@ import { tmpdir } from "node:os";
 // Allow timer-triggered WebAudio (reminder chimes) to play without a click.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
 
+// --- keep the footprint small (this is an always-on dev companion) ---
+// Cap the JS heaps and drop Chromium features we never use. (Hardware accel is
+// kept ON: for a transparent full-screen overlay, software compositing costs
+// MORE CPU; the win comes from the adaptive frame-rate instead.)
+app.commandLine.appendSwitch("js-flags", "--max-old-space-size=96 --max-semi-space-size=2");
+app.commandLine.appendSwitch("disable-features",
+  "Translate,MediaRouter,DialMediaRouteProvider,OptimizationHints,CalculateNativeWinOcclusion");
+// run GPU work in the browser process instead of a separate GPU process (one
+// fewer Chromium process for this tiny overlay).
+app.commandLine.appendSwitch("in-process-gpu");
+
 // Local control port for external tools (e.g. Claude Code hooks) to drive the
 // cat: GET /think -> pondering loop, /alert -> "answer ready", /idle -> settle.
 const CONTROL_PORT = 39127;
+
+// ---- persisted config (userData/pao-config.json) ------------------------
+interface PaoConfig {
+  name: string;
+  furId: string;                                 // appearance: fur preset id
+  bellColor: string;                             // appearance: bell color id (or "hide")
+  sound: { muted: boolean; volume: number };   // volume 0..1
+  sleepMin: number;                              // idle -> sleep, minutes
+  hydrationMin: number;                          // 0 = off
+  leisureNudge: boolean;
+  contextEnabled: boolean;                       // privacy: read the focused window?
+  contextRules: { pattern: string; mode: string }[];   // user rules (checked first)
+  autostart: boolean;
+  firstRunDone: boolean;
+}
+const DEFAULT_CONFIG: PaoConfig = {
+  name: "Pao", furId: "classic", bellColor: "gold",
+  sound: { muted: false, volume: 1 }, sleepMin: 1, hydrationMin: 15,
+  leisureNudge: true, contextEnabled: true, contextRules: [], autostart: false, firstRunDone: false,
+};
+let config: PaoConfig = { ...DEFAULT_CONFIG };
+const configPath = () => join(app.getPath("userData"), "pao-config.json");
+function loadConfig() {
+  try { config = { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(configPath(), "utf8")) }; }
+  catch { config = { ...DEFAULT_CONFIG }; }
+}
+function saveConfig() { try { writeFileSync(configPath(), JSON.stringify(config, null, 2)); } catch { /* noop */ } }
+function broadcastConfig() {
+  win?.webContents.send("config", config);
+  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send("config", config);
+  if (onboardingWin && !onboardingWin.isDestroyed()) onboardingWin.webContents.send("config", config);
+}
+function applyConfigMain() {
+  try { app.setLoginItemSettings({ openAtLogin: config.autostart }); } catch { /* noop */ }
+  if (tray && !tray.isDestroyed()) tray.setToolTip(config.name || "Pao");
+  ensureActiveWindow();
+}
 
 // A privileged custom scheme so the renderer can fetch() its JSON metadata
 // (Chromium blocks fetch() over file://). Must be registered before app ready.
@@ -24,6 +72,7 @@ protocol.registerSchemesAsPrivileged([
 
 let win: BrowserWindow | null = null;
 let settingsWin: BrowserWindow | null = null;
+let onboardingWin: BrowserWindow | null = null;
 let tray: Tray | null = null;
 // rebuilds the tray menu so it reflects live state (e.g. input hook on/off);
 // assigned once the tray exists.
@@ -66,6 +115,9 @@ async function createWindow() {
       preload: join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      spellcheck: false,
+      backgroundThrottling: false,   // never focused; keep the cat animating
+      v8CacheOptions: "none",
     },
   });
 
@@ -74,14 +126,16 @@ async function createWindow() {
   win.setIgnoreMouseEvents(true, { forward: true });
   win.loadURL("app://bundle/index.html");
 
-  // Tell the renderer where the overlay sits on the virtual screen.
+  // Tell the renderer where the overlay sits on the virtual screen + its config.
   win.webContents.on("did-finish-load", () => {
     win?.webContents.send("display-info", { originX: x, originY: y, width, height });
+    win?.webContents.send("config", config);
   });
 
   // stop the cursor timer and drop the reference when the window goes away
   win.on("closed", () => {
     if (cursorTimer) { clearInterval(cursorTimer); cursorTimer = null; }
+    if (awTimer) { clearInterval(awTimer); awTimer = null; }
     win = null;
   });
 
@@ -335,10 +389,15 @@ function startCursorLoop() {
       p.x >= hitbox.x && p.x <= hitbox.x + hitbox.w &&
       p.y >= hitbox.y && p.y <= hitbox.y + hitbox.h;
 
-    if (over && !interacting) {
+    // While the user is scrolling, stay click-through even over the cat so the
+    // wheel reaches the app underneath (the cat still reacts to scroll via the
+    // global hook — capturing the wheel here would only block the user's work).
+    const scrolling = Date.now() < wheelPassUntil;
+
+    if (over && !interacting && !scrolling) {
       interacting = true;
       win.setIgnoreMouseEvents(false);
-    } else if (!over && interacting) {
+    } else if ((!over || scrolling) && interacting) {
       interacting = false;
       win.setIgnoreMouseEvents(true, { forward: true });
     }
@@ -429,6 +488,43 @@ function startKeyboardHook() {
     + "(drag, hover, pet, sleep still work). Reinstall with: npm i uiohook-napi");
 }
 
+// ---- optional active-window awareness (what app/site is focused) ---------
+// get-windows is ESM-only; load it via a runtime dynamic import so the CJS
+// bundler can't rewrite it to require(). Falls back to off if unavailable.
+let awTimer: NodeJS.Timeout | null = null;
+let awStarting = false;
+function ensureActiveWindow() {
+  if (!config.contextEnabled) { if (awTimer) { clearInterval(awTimer); awTimer = null; } return; }
+  if (awTimer || awStarting) return;
+  startActiveWindowLoop();
+}
+async function startActiveWindowLoop() {
+  awStarting = true;
+  let activeWindow: (() => Promise<{ title?: string; owner?: { name?: string } } | undefined>) | null = null;
+  try {
+    const dynImport = new Function("s", "return import(s)") as (s: string) => Promise<{ activeWindow: typeof activeWindow }>;
+    activeWindow = (await dynImport("get-windows")).activeWindow;
+  } catch {
+    awStarting = false;
+    console.warn("[pao] get-windows unavailable — context awareness off (npm i get-windows)");
+    return;
+  }
+  awStarting = false;
+  console.log("[pao] active-window context awareness on");
+  let busy = false, lastSig = "";
+  awTimer = setInterval(async () => {
+    if (busy || !win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+    busy = true;
+    try {
+      const w = await activeWindow!();
+      const app = w?.owner?.name || "", title = w?.title || "";
+      const sig = `${app}|${title}`;
+      if (sig !== lastSig) { lastSig = sig; win.webContents.send("active-window", { app, title }); }
+    } catch { /* ignore transient errors */ }
+    busy = false;
+  }, 1500);
+}
+
 // renderer pushes the cat hitbox every frame (throttled on its side)
 ipcMain.on("hitbox", (_e, box) => { hitbox = box; });
 ipcMain.on("dragging", (_e, v: boolean) => { draggingActive = v; });
@@ -449,7 +545,7 @@ function openSettings() {
   settingsWin = new BrowserWindow({
     width: 340, height: 680, resizable: true, title: "Pao — Settings",
     skipTaskbar: false, alwaysOnTop: true, fullscreenable: false, minimizable: false,
-    webPreferences: { preload: join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false },
+    webPreferences: { preload: join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, spellcheck: false },
   });
   settingsWin.setMenuBarVisibility(false);
   // The transparent overlay is always-on-top at "screen-saver" level, and the
@@ -461,6 +557,7 @@ function openSettings() {
     if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.moveTop(); settingsWin.focus(); }
   });
   settingsWin.loadURL("app://bundle/settings.html");
+  settingsWin.webContents.on("did-finish-load", () => settingsWin?.webContents.send("config", config));
   settingsWin.on("closed", () => { settingsWin = null; });
 }
 
@@ -592,6 +689,7 @@ function startControlServer() {
         win?.webContents.send("do", `peek:${val}`);
       }
       else if (path.startsWith("/settings")) openSettings();
+      else if (path.startsWith("/customize")) openOnboarding();
       else if (path.startsWith("/idle")) win?.webContents.send("do", "idle");
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("ok");

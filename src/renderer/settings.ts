@@ -104,10 +104,31 @@ document.getElementById("startPomo")!.addEventListener("click", () => {
   flash("pomoOk", `Started — ${cfg.focus}/${cfg.brk} (long ${cfg.long} every ${cfg.every}) ✓`);
 });
 
+const modeEl = document.getElementById("mode") as HTMLSelectElement;
+function syncMode(): void {
+  const atMode = modeEl.value === "at";
+  (document.getElementById("rowIn") as HTMLElement).style.display = atMode ? "none" : "flex";
+  (document.getElementById("rowAt") as HTMLElement).style.display = atMode ? "flex" : "none";
+}
+modeEl.addEventListener("change", syncMode);
+syncMode();
+
 document.getElementById("setMeeting")!.addEventListener("click", () => {
-  const cfg = { mins: Math.max(0, num("mins", 10)), label: str("label", "Meeting") };
-  window.bridge.setMeeting(cfg);
-  flash("meetOk", cfg.mins > 0 ? `Reminder set in ${cfg.mins} min ✓` : "Reminder set (now) ✓");
+  const label = str("label", "Meeting");
+  const preMin = Math.max(0, num("preMin", 5));
+  if (modeEl.value === "at") {
+    const t = (document.getElementById("at") as HTMLInputElement).value || "00:00";
+    const [hh, mm] = t.split(":").map((n) => parseInt(n, 10));
+    const d = new Date();
+    d.setHours(hh || 0, mm || 0, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);   // next day if past
+    window.bridge.setMeeting({ atMs: d.getTime(), label, preMin });
+    flash("meetOk", `Reminder set for ${t} ✓`);
+  } else {
+    const mins = Math.max(0, num("mins", 10));
+    window.bridge.setMeeting({ mins, label, preMin });
+    flash("meetOk", mins > 0 ? `Reminder in ${mins} min ✓` : "Reminder set (now) ✓");
+  }
 });
 
 document.getElementById("treatBtn")!.addEventListener("click", () => {

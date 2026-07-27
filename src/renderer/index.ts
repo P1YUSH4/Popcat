@@ -42,6 +42,9 @@ async function main(): Promise<void> {
     else if (action === "treat") cat.giveTreat();
     else if (action === "pomo:start") cat.startPomodoro();
     else if (action === "pomo:stop") cat.stopPomodoro();
+    else if (action === "pomo:pause") cat.pausePomodoro();
+    else if (action === "pomo:resume") cat.resumePomodoro();
+    else if (action === "pomo:skip") cat.skipPomodoro();
     else if (action === "focus") cat.focusAlert();
     else if (action.startsWith("meeting:")) cat.scheduleMeeting(parseInt(action.split(":")[1], 10) || 0);
     else if (action.startsWith("coat:")) cat.setCoat(action.split(":")[1]);
