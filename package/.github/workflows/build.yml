@@ -1,0 +1,42 @@
+name: build
+
+# Builds Pao for Windows AND macOS in the cloud — no Mac hardware needed.
+# Triggers on a version tag (e.g. `git tag v0.1.0 && git push --tags`) or manually.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build distributables
+        run: npm run dist
+        env:
+          # build UNSIGNED on macOS (no Apple Developer cert in CI). Users will
+          # need to right-click -> Open the first time until you add notarization.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pao-${{ matrix.os }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: warn

@@ -18,6 +18,7 @@ Output:
 """
 
 import json
+import math
 import os
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -31,16 +32,19 @@ OUT_DIR = os.path.normpath(os.path.join(HERE, "..", "assets", "sprites"))
 
 # ---- palette: COMNYANG style (white cat, grey ears/tail, pink collar+bell) --
 T       = (0, 0, 0, 0)
-OUTLINE = (52, 48, 78, 255)     # dark navy outline / details
-BODY    = (255, 247, 247, 255)  # white fur (FFF7F7)
-SHADOW  = (208, 210, 218, 255)  # grey: ears / tail / shading (DCDCDC-ish)
-BELLY   = (255, 252, 252, 255)  # near-white belly / sclera / light
-EYE     = (60, 56, 92, 255)     # dark eyes + pupil
-ACCENT  = (250, 152, 178, 255)  # pink: collar / blush / nose / inner ear
-BELL    = (255, 210, 77, 255)   # yellow collar bell (FFD24D)
-PALETTE = [OUTLINE, BODY, SHADOW, BELLY, EYE, ACCENT, BELL]
+# Jiji-style black cat (Ghibli): near-black fur, big bright eyes, pink nose/collar.
+OUTLINE   = (150, 148, 176, 255)  # softer cool-grey rim -> readable on dark AND light backgrounds, less "stickered"
+BODY      = (46, 43, 60, 255)     # near-black fur (a touch warmer + deeper)
+SHADOW    = (24, 22, 36, 255)     # deeper fur shadow -> stronger form
+BELLY     = (78, 74, 100, 255)    # clearer lighter fur tone -> the black body reads ROUND, not flat
+EYE       = (30, 28, 44, 255)     # dark pupil + on-sclera detail
+SCLERA    = (228, 246, 232, 255)  # big bright eyes (pale mint) — Jiji's signature; visible on black fur
+ACCENT    = (250, 152, 178, 255)  # pink: nose / inner ear / collar
+BELL      = (255, 210, 77, 255)   # yellow collar bell (FFD24D)
+HIGHLIGHT = (255, 255, 255, 255)  # tiny white eye sparkle
+PALETTE = [OUTLINE, BODY, SHADOW, BELLY, EYE, SCLERA, ACCENT, BELL]
 PUPIL_RADIUS = 1
-PUPIL_MAX = 1.5
+PUPIL_MAX = 2.0                 # dark pupil travel toward the cursor (on the bright eye)
 
 # greys used ONLY by prop overlays (toilet-paper tube / shading). Drawn after
 # the cat is snapped to the 6-color palette, so the character stays on-palette.
@@ -87,12 +91,13 @@ def draw_pose(ear=0, tail=0, eyestate="open", mouth="smile",
     hdy = head_dy
     # ---------- ears ----------
     def ear_shape(cx_, t):
-        P(d, cx_, t, SHADOW)
-        R(d, cx_ - 1, t + 1, cx_ + 1, t + 1, SHADOW)
-        R(d, cx_ - 2, t + 2, cx_ + 2, t + 2, SHADOW)
-        R(d, cx_ - 2, t + 3, cx_ + 2, t + 4, SHADOW)
+        # tall pointed ear (Jiji), black fur with a small pink inner
+        P(d, cx_, t, BODY)
+        R(d, cx_ - 1, t + 1, cx_ + 1, t + 1, BODY)
+        R(d, cx_ - 1, t + 2, cx_ + 1, t + 2, BODY)
+        R(d, cx_ - 2, t + 3, cx_ + 2, t + 4, BODY)
         P(d, cx_, t + 2, ACCENT)
-        R(d, cx_ - 1, t + 3, cx_ + 1, t + 3, ACCENT)
+        P(d, cx_, t + 3, ACCENT)
     et = 7 - ear + hdy
     ear_shape(23, et)
     ear_shape(mx(23), et)
@@ -109,6 +114,10 @@ def draw_pose(ear=0, tail=0, eyestate="open", mouth="smile",
     R(d, 23, 26 + hy, 40, 28 + hy, BELLY)
     # head shadow (right side)
     R(d, 41, 14 + hy, 42, 25 + hy, SHADOW)
+    # upper-left rim light: a thin diagonal catch along the head curve so the
+    # forehead reads ROUND (soft top-left key light), not a flat black disc
+    P(d, 21, 15 + hy, BELLY); P(d, 22, 14 + hy, BELLY)
+    P(d, 23, 13 + hy, BELLY); P(d, 24, 12 + hy, BELLY)
 
     # ---------- body (small) ----------
     by = 31 + hy
@@ -154,24 +163,30 @@ def draw_pose(ear=0, tail=0, eyestate="open", mouth="smile",
     for (ex, ey0) in EYE_BASE:
         ey = ey0 + hy
         if eyestate == "open":
-            R(d, ex - 1, ey - 2, ex + 1, ey + 2, EYE)     # smaller rounded eye
-            R(d, ex - 2, ey - 1, ex + 2, ey + 1, EYE)
-            R(d, ex - 1, ey - 1, ex + 1, ey + 1, BELLY)   # sclera (pupil added at runtime)
+            # big bright Jiji eye: a tall PALE oval (sclera). The dark pupil is
+            # the runtime "pupil" (tracks the cursor); we bake nothing here so the
+            # eye stays bright. The app always draws the pupil each frame.
+            R(d, ex - 1, ey - 3, ex + 1, ey - 3, SCLERA)  # top cap (3w)
+            R(d, ex - 2, ey - 2, ex + 2, ey + 1, SCLERA)  # body (5w x 4h)
+            R(d, ex - 1, ey + 2, ex + 1, ey + 2, SCLERA)  # bottom cap (3w)
         elif eyestate == "closed":
-            R(d, ex - 3, ey, ex + 3, ey, EYE)
-            P(d, ex - 3, ey - 1, EYE); P(d, ex + 3, ey - 1, EYE)
+            R(d, ex - 3, ey, ex + 3, ey, SCLERA)          # pale so it shows on black fur
+            P(d, ex - 3, ey - 1, SCLERA); P(d, ex + 3, ey - 1, SCLERA)
         elif eyestate == "happy":
-            P(d, ex - 2, ey, EYE); P(d, ex - 1, ey - 1, EYE)
-            P(d, ex, ey - 2, EYE); P(d, ex + 1, ey - 1, EYE); P(d, ex + 2, ey, EYE)
+            # bright upward ^_^ curve (2px thick) — pale so it reads on black
+            P(d, ex - 2, ey + 1, SCLERA); P(d, ex - 2, ey, SCLERA)
+            P(d, ex - 1, ey - 1, SCLERA); P(d, ex, ey - 2, SCLERA); P(d, ex + 1, ey - 1, SCLERA)
+            P(d, ex + 2, ey, SCLERA); P(d, ex + 2, ey + 1, SCLERA)
+            P(d, ex - 1, ey, SCLERA); P(d, ex + 1, ey, SCLERA)
         elif eyestate == "dizzy":
-            R(d, ex - 2, ey - 2, ex + 2, ey + 2, EYE)
-            P(d, ex, ey, BELLY)
+            R(d, ex - 2, ey - 2, ex + 2, ey + 2, SCLERA)
+            P(d, ex, ey, EYE)
         elif eyestate == "swirl":
-            # spinning spiral eye (classic dizzy). A 5x5 white disc with a dark
+            # spinning spiral eye (classic dizzy). A pale disc with a dark
             # @-shaped spiral that rotates 90 deg per frame -> reads as spinning.
-            R(d, ex - 1, ey - 2, ex + 1, ey - 2, BELLY)   # white disc
-            R(d, ex - 2, ey - 1, ex + 2, ey + 1, BELLY)
-            R(d, ex - 1, ey + 2, ex + 1, ey + 2, BELLY)
+            R(d, ex - 1, ey - 2, ex + 1, ey - 2, SCLERA)  # pale disc
+            R(d, ex - 2, ey - 1, ex + 2, ey + 1, SCLERA)
+            R(d, ex - 1, ey + 2, ex + 1, ey + 2, SCLERA)
             spiral = [
                 (-1, -2), (0, -2), (1, -2),
                 (-2, -1), (1, -1),
@@ -199,30 +214,30 @@ def draw_pose(ear=0, tail=0, eyestate="open", mouth="smile",
             P(d, gx, ny + 2, BELLY)
     # neutral -> nothing
 
-    # ---------- blush (always-on, COMNYANG style) ----------
-    R(d, 22, 27 + hy, 23, 28 + hy, ACCENT)
-    R(d, mx(23), 27 + hy, mx(22), 28 + hy, ACCENT)
-    if blush:   # extra-rosy for purr/overheat/drag states
+    # ---------- blush (only when emotive; sleek Jiji has no permanent blush) ----------
+    if blush:   # purr / overheat / drag / shy states
+        R(d, 22, 27 + hy, 23, 28 + hy, ACCENT)
+        R(d, mx(23), 27 + hy, mx(22), 28 + hy, ACCENT)
         P(d, 21, 28 + hy, ACCENT); P(d, mx(21), 28 + hy, ACCENT)
 
     return add_outline(img)
 
 
 def draw_tail(d, tail, hy):
-    # grey tail (COMNYANG bicolor look), white tip
+    # all-black expressive tail (Jiji), with a subtle lighter tip for form
     if tail == 0:        # resting curl to the right
-        R(d, 38, 44, 40, 45, SHADOW); R(d, 40, 41, 42, 43, SHADOW); R(d, 41, 39, 43, 41, SHADOW)
-        P(d, 42, 39, BODY)
+        R(d, 38, 44, 40, 45, BODY); R(d, 40, 41, 42, 43, BODY); R(d, 41, 39, 43, 41, BODY)
+        P(d, 42, 39, BELLY)
     elif tail == 1:      # raised
-        R(d, 38, 42, 40, 44, SHADOW); R(d, 39, 37, 41, 42, SHADOW); R(d, 40, 33, 42, 37, SHADOW)
-        P(d, 41, 33, BODY)
+        R(d, 38, 42, 40, 44, BODY); R(d, 39, 37, 41, 42, BODY); R(d, 40, 33, 42, 37, BODY)
+        P(d, 41, 33, BELLY)
     elif tail == 2:      # low wag left/back
-        R(d, 38, 45, 41, 46, SHADOW); R(d, 41, 43, 43, 45, SHADOW); P(d, 42, 43, BODY)
+        R(d, 38, 45, 41, 46, BODY); R(d, 41, 43, 43, 45, BODY); P(d, 42, 43, BELLY)
     elif tail == 3:      # flick high (excited)
-        R(d, 38, 40, 40, 44, SHADOW); R(d, 40, 35, 42, 40, SHADOW); R(d, 41, 31, 43, 35, SHADOW)
-        P(d, 42, 31, BODY)
+        R(d, 38, 40, 40, 44, BODY); R(d, 40, 35, 42, 40, BODY); R(d, 41, 31, 43, 35, BODY)
+        P(d, 42, 31, BELLY)
     elif tail == 4:      # wrapped (sit)
-        R(d, 26, 47, 38, 49, SHADOW); R(d, 24, 46, 27, 48, SHADOW); P(d, 25, 45, BODY)
+        R(d, 26, 47, 38, 49, BODY); R(d, 24, 46, 27, 48, BODY); P(d, 25, 45, BELLY)
 
 
 def add_outline(img):
@@ -456,36 +471,41 @@ def overlay(cell, kind, i, n):
 
 # ---- animations: (pose_kwargs, transform_kwargs, overlay|None) ----------
 def idle():
-    # Eased breath: hold the rest bottom + inhale top, snap through the middle.
-    # sx = 1/sy keeps the silhouette mass constant. Tail drifts continuously
-    # (no pop) and a single fast blink reads as natural.
-    sy   = [1.00, 1.015, 1.03, 1.03, 1.02, 1.005, 1.00, 1.00]
-    durs = [240,  120,   90,   210,  110,  130,   80,   300]
-    tail = [0, 0, 1, 1, 1, 1, 0, 0]      # gentle continuous sway, offset from breath
-    fr = []
-    for i in range(8):
-        es = "closed" if i == 6 else "open"      # one quick blink (80ms)
-        ear = 1 if i == 3 else 0                  # tiny ear flick at the breath top
-        fr.append((dict(eyestate=es, tail=tail[i], ear=ear, blush=False),
-                   dict(sy=sy[i], sx=1.0 / sy[i], dy=-(sy[i] - 1) * 18), None))
+    # SMOOTH breathing: 16 frames on a continuous sine so the rise/fall reads
+    # seamless (Comnyang-style) instead of stepping through a few held poses.
+    # sx = 1/sy keeps the silhouette mass constant. One quick double-frame blink
+    # and a slow tail sway add life without popping.
+    N = 16
+    fr, durs = [], []
+    for i in range(N):
+        ph = i / N * 2 * math.pi
+        breath = (1 - math.cos(ph)) / 2            # 0..1..0, smooth at both ends
+        sy = 1.0 + 0.035 * breath
+        es = "closed" if i in (11, 12) else "open"  # one ~120ms blink per cycle
+        ear = 1 if i in (6, 7) else 0               # tiny ear flick near the inhale top
+        tail = 0 if i < 8 else 1                    # one slow sway per breath
+        fr.append((dict(eyestate=es, tail=tail, ear=ear, blush=False),
+                   dict(sy=sy, sx=1.0 / sy, dy=-(sy - 1) * 18), None))
+        durs.append(60)                             # ~0.96s cycle at a smooth ~16fps
     return fr, durs
 
 
 def walk():
-    # Bounce: squash on contact, stretch up through the passing position. The
-    # tail counter-swings (offset from the legs) = follow-through. Contacts are
-    # held a touch longer so the gait has weight instead of a flat shuffle.
-    paw  = [1, 1, 0, 2, 2, 0, 1, 0]
-    tail = [2, 1, 1, 0, 2, 1, 1, 0]      # lags the legs by ~a frame
-    bob  = [1, 0, -2, -1, 1, 0, -2, -1]  # down at contact, up at passing
-    durs = [95, 70, 80, 70, 95, 70, 80, 70]
-    fr = []
-    for i in range(8):
-        contact = i in (0, 4)
-        passing = i in (2, 6)
-        sy = 0.95 if contact else (1.04 if passing else 1.0)
-        fr.append((dict(paw=paw[i], tail=tail[i], eyestate="open", mouth="smile"),
-                   dict(dy=bob[i], dx=0, sx=1.0 / sy, sy=sy), None))
+    # SMOOTH bounce: 12 frames on a continuous sine. Two strides per cycle —
+    # squash low at each contact, stretch up through the passing position. The
+    # front paws alternate per stride and the tail counter-swings for follow-
+    # through. Denser frames remove the old shuffly stepping.
+    N = 12
+    fr, durs = [], []
+    for i in range(N):
+        ph = i / N * 2 * math.pi
+        bob = -round(2 * math.cos(2 * ph))         # 2 bounces/cycle: low at contact
+        sy = 1.0 + 0.05 * math.cos(2 * ph)         # squash (sy<1) at contact, stretch at passing
+        paw = 1 if (i % 6) < 3 else 2              # left paw lifts, then right
+        tail = 1 if math.sin(2 * ph - 0.8) > 0 else 2   # lags the legs ~a frame
+        fr.append((dict(paw=paw, tail=tail, eyestate="open", mouth="smile"),
+                   dict(dy=bob, dx=0, sx=1.0 / sy, sy=sy), None))
+        durs.append(62)
     return fr, durs
 
 
@@ -878,7 +898,7 @@ def export_atlas():
             for e in eyes:
                 if e["open"]:
                     ex, ey = int(round(e["x"])), int(round(e["y"]))
-                    R(dd, ex - 1, ey - 1, ex, ey, EYE)
+                    R(dd, ex - 1, ey - 1, ex, ey, EYE)   # dark pupil on the bright eye
             big = cell.resize((ATLAS_CELL, ATLAS_CELL), Image.NEAREST)
             sheet.paste(big, (col * ATLAS_CELL, r * ATLAS_CELL))
             rects.append({"x": col * ATLAS_CELL, "y": r * ATLAS_CELL, "w": ATLAS_CELL, "h": ATLAS_CELL})

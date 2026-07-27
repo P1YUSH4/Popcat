@@ -83,6 +83,21 @@ class SoundFX {
     this.tone(659, 0.00, 0.12, 0.14, "sine");      // E5
     this.tone(440, 0.11, 0.22, 0.14, "sine");      // A4
   }
+
+  /** wall bounce when thrown: a short low "boop", pitch/volume scale with impact. */
+  thud(strength = 0.5): void {
+    if (this.muted) return;
+    const s = Math.max(0.1, Math.min(1, strength));
+    this.tone(120 + s * 90, 0, 0.12, 0.06 + s * 0.12, "sine");
+  }
+
+  /** achievement unlocked: bright ascending three-note sparkle. */
+  achievement(): void {
+    if (this.muted) return;
+    this.tone(659, 0.00, 0.16, 0.15, "triangle");  // E5
+    this.tone(880, 0.10, 0.16, 0.15, "triangle");  // A5
+    this.tone(1318, 0.20, 0.34, 0.16, "triangle"); // E6
+  }
 }
 
 export const sound = new SoundFX();

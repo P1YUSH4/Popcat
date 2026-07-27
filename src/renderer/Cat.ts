@@ -1,12 +1,17 @@
+import { AchievementsController } from "./Achievements";
+import { AffectController, type AffectSnapshot } from "./Affect";
+import { accessoryLabel, ACCESSORIES, ACCESSORY_UNLOCKS, accessoryRequirement, unlockedAccessories } from "./Accessories";
+import { BondController } from "./Bond";
+import { coatLabel, coatRequirement, COATS, COAT_UNLOCKS, unlockedCoats } from "./Coats";
 import { AnimationController } from "./AnimationController";
 import { BehaviorController } from "./BehaviorController";
 import { InputController } from "./InputController";
 import { Particles } from "./Particles";
+import { Perception } from "./Perception";
 import { PhysicsController } from "./PhysicsController";
-import { SpriteRenderer, type DrawOpts } from "./SpriteRenderer";
 import { sound } from "./Sound";
-import { recolorSheet } from "./recolor";
-import type { SpriteMeta } from "./types";
+import { SpriteRenderer, type DrawOpts } from "./SpriteRenderer";
+import type { SpriteMeta, Vec2 } from "./types";
 
 type Rect = { x: number; y: number; w: number; h: number };
 /** Smallest rect covering both inputs (used to grow the per-frame clear region). */
@@ -28,9 +33,12 @@ export class Cat {
   readonly phys = new PhysicsController();
   readonly input = new InputController();
   readonly behavior: BehaviorController;
+  readonly perception: Perception;
+  readonly affectEngine: AffectController;
+  private achv: AchievementsController;
+  private bond: BondController;
   private renderer: SpriteRenderer;
-  private srcSheet: HTMLImageElement;   // original art, recolored on config change
-  name = "Pao";
+  private lastStateSent = 0;
 
   private dragging = false;
   private lastHitboxSent = 0;
@@ -39,6 +47,11 @@ export class Cat {
   private dragDir = 0;
   private dragReversals: number[] = [];
   private lastMoveT = 0;
+  // throw: pointer velocity during a drag (px/s) -> fling on release
+  private dragVel = { x: 0, y: 0 };
+  private dragPrev = { x: 0, y: 0 };
+  private dragPrevT = 0;
+  private bounceSquash = 0;   // transient squash on a wall bounce
   // visual/particle bookkeeping
   private particles = new Particles();
   private prevState = "";
@@ -49,9 +62,6 @@ export class Cat {
   private pomoChip: HTMLDivElement | null = null;
   private meetingChip: HTMLDivElement | null = null;
   private timersVisible = false;
-  private timerRows = 0;
-  private lastPomoSig = "";
-  private lastClear: { x: number; y: number; w: number; h: number } | null = null;
   // yarn ball the cat plays with while scrolling (runtime physics)
   private yarnAngle = 0;   // current spin
   private yarnSpin = 0;    // extra spin from bats (decays)
@@ -66,6 +76,38 @@ export class Cat {
     this.srcSheet = sheet;
     this.renderer = new SpriteRenderer(canvas, sheet, meta);
     this.behavior = new BehaviorController(this.anim, this.phys, this.input);
+    this.perception = new Perception(this.input);
+    this.affectEngine = new AffectController(this.perception, this.behavior);
+    // deterministic reward loop on top of the rhythm engine (no AI)
+    this.achv = new AchievementsController((title, id) => {
+      this.behavior.doCelebrate();
+      this.behavior.say(`🏆 ${title}`, 3200);
+      sound.achievement();
+      // does this achievement unlock a coat / accessory? announce it (the loop)
+      const coat = Object.keys(COAT_UNLOCKS).find((c) => COAT_UNLOCKS[c] === id);
+      if (coat) setTimeout(() => this.behavior.say(`🎨 New coat unlocked: ${coatLabel(coat)}!`, 3000), 1700);
+      const acc = Object.keys(ACCESSORY_UNLOCKS).find((a) => ACCESSORY_UNLOCKS[a] === id);
+      if (acc) setTimeout(() => this.behavior.say(`🎀 New accessory: ${accessoryLabel(acc)}!`, 3000), coat ? 3400 : 1700);
+    });
+    this.bond = new BondController((level, name) => {
+      this.behavior.doCelebrate();
+      this.behavior.say(`Bond level ${level}: ${name}`, 3200);
+      sound.achievement();
+    });
+    // foreground-window changes (optional signal) feed ambient perception
+    window.bridge.onAppFocus?.((title: string) => this.perception.setActiveApp(title));
+    // wall bounce while thrown -> squash + thud
+    this.phys.onBounce = (strength: number) => {
+      this.bounceSquash = Math.min(0.5, 0.22 + strength * 0.4);
+      sound.thud(strength);
+    };
+    // restore the saved coat colour + pet name
+    const savedCoat = localStorage.getItem("pao.coat");
+    if (savedCoat) this.renderer.setCoat(savedCoat);
+    const savedName = localStorage.getItem("pao.name");
+    if (savedName) this.behavior.petName = savedName;
+    const savedAcc = localStorage.getItem("pao.accessory");
+    if (savedAcc) this.renderer.setAccessory(savedAcc);
 
     this.fitToWindow();
     this.phys.teleportTo({ x: this.phys.bounds.maxX * 0.5, y: this.phys.bounds.maxY * 0.8 });
@@ -158,6 +200,87 @@ export class Cat {
   confused(): void { this.behavior.doConfused(); }
   angry(): void { this.behavior.doAngry(); }
   setPeek(on: boolean): void { this.behavior.setPeek(on); }
+  /** wander mode: full reactive set (walks/hunts/eyes follow) vs drag-only. */
+  setAutonomous(on: boolean): void { this.behavior.setAutonomous(on); }
+  /** current ambient-perception + mood snapshot (for the control server / devtools). */
+  affect(): AffectSnapshot { return this.affectEngine.snapshot(); }
+  /** unlocked achievements + streak summary. */
+  achievements() { return this.achv.summary(); }
+  /** swap the cat's coat colour — only if it's been unlocked (the earn loop). */
+  setCoat(name: string): void {
+    if (!unlockedCoats(this.achv.unlockedIds()).has(name)) {
+      this.behavior.say("🔒 Earn this coat first!", 2200);
+      return;
+    }
+    this.renderer.setCoat(name);
+    try { localStorage.setItem("pao.coat", name); } catch { /* ignore */ }
+  }
+  /** coats unlocked so far (for the settings picker / control server). */
+  unlockedCoatNames(): string[] { return [...unlockedCoats(this.achv.unlockedIds())]; }
+  /** put on / take off an accessory — only if it's been unlocked. */
+  setAccessory(name: string): void {
+    if (!unlockedAccessories(this.achv.unlockedIds()).has(name)) {
+      this.behavior.say("🔒 Earn this accessory first!", 2200);
+      return;
+    }
+    this.renderer.setAccessory(name);
+    try { localStorage.setItem("pao.accessory", name); } catch { /* ignore */ }
+  }
+  /** name the pet; persisted, used in greetings. */
+  setName(name: string): void {
+    const n = name.trim().slice(0, 20);
+    this.behavior.petName = n;
+    try { localStorage.setItem("pao.name", n); } catch { /* ignore */ }
+    this.behavior.say(n ? `I'm ${n}! 🐾` : "Meow~", 2200);
+  }
+  petName(): string { return this.behavior.petName; }
+  /** daily care action: one treat per day builds bond and gives a cute reaction. */
+  giveTreat(): void {
+    const r = this.bond.giveTreat();
+    if (r.ok) {
+      this.behavior.say(`Yum! ${r.message}`, 2400);
+      this.behavior.doCelebrate();
+      this.particles.heart({ x: this.phys.pos.x, y: this.phys.pos.y - this.headOff }, performance.now());
+    } else {
+      this.behavior.say("Already had a treat today. Pet me instead?", 2400);
+    }
+  }
+  /** first-run greeting: a happy hop + a friendly tip bubble. */
+  welcome(): void {
+    this.behavior.say("Hi! I'm Pao 🐾 right-click my tray icon to name me & dress me up", 6000);
+    this.behavior.finishThinking();   // happy jump
+  }
+  /** use a hi-res painted image instead of the pixel sprite (illustrated mode). */
+  setIllustrated(img: HTMLImageElement): void { this.renderer.setIllustrated(img, 64 * this.renderer.scale * 0.85); }
+  /** current interactive hitbox (illustrated or pixel). */
+  private catHitbox(pos: Vec2): { x: number; y: number; w: number; h: number } {
+    return this.renderer.isIllustrated ? this.renderer.illuHitbox(pos) : this.renderer.hitbox(pos);
+  }
+  private visibleHitbox(): { x: number; y: number; w: number; h: number } {
+    let box = this.catHitbox(this.phys.pos);
+    if (this.timersVisible) {
+      const p = this.phys.pos;
+      const top = p.y - this.headOff - 64, left = p.x - 85, right = p.x + 85;
+      const x = Math.min(box.x, left), y = Math.min(box.y, top);
+      box = { x, y, w: Math.max(box.x + box.w, right) - x, h: box.y + box.h - y };
+    }
+    if (this.behavior.peekMode) {
+      // peeking past the RIGHT edge: clamp the hitbox to the visible (on-screen)
+      // left sliver so the cursor still registers over the peeking head.
+      const W = window.innerWidth;
+      const x0 = Math.max(0, box.x), x1 = Math.min(box.x + box.w, W);
+      const visW = x1 - x0;
+      if (visW < 10) {
+        const strip = 32;
+        box = { x: W - strip, y: box.y, w: strip, h: box.h };
+      } else {
+        box = { x: x0, y: box.y, w: Math.max(10, visW), h: box.h };
+      }
+    }
+    return box;
+  }
+  /** demo: toss the cat with a random upward velocity (used by /throw). */
+  tossDemo(): void { this.behavior.throwCat({ x: (Math.random() * 2 - 1) * 700, y: -1100 - Math.random() * 400 }); }
 
   // ---- frame loop -------------------------------------------------------
   update(dt: number): void {
@@ -167,23 +290,62 @@ export class Cat {
       this.behavior.setShaking(false);
     }
     this.behavior.update(dt);
+    // ambient perception + mood: read your rhythm, gently steer baseline behaviour
+    this.perception.update(dt);
+    this.affectEngine.update(dt, performance.now());
     this.phys.update(dt);
     this.anim.update(dt * 1000);
     this.particles.update(dt);
     this.emitParticles();
     this.updateYarn(dt);
+    this.bounceSquash *= Math.max(0, 1 - dt * 8);   // bounce squash recovers
     this.syncHitbox();
-    this.syncPomoState();
+    this.syncAffectState();
   }
 
-  /** tell main about Pomodoro state changes so the tray menu can reflect them. */
-  private syncPomoState(): void {
-    const b = this.behavior;
-    const on = b.isPomoActive(), paused = b.isPomoPaused();
-    const sig = `${on ? 1 : 0}|${paused ? 1 : 0}|${b.pomoLabel()}`;
-    if (sig === this.lastPomoSig) return;
-    this.lastPomoSig = sig;
-    window.bridge.setPomoState({ on, paused, phase: b.pomoLabel() });
+  /** True when the cat needs full 60fps (motion, drag, effects). False when it's
+   *  calmly looping (sit / idle / sleep with no movement) so the frame loop can
+   *  drop to ~30fps and save CPU/GPU during focus work or while you're away. */
+  busy(): boolean {
+    const s = this.state();
+    const calm = s === "SIT" || s === "IDLE" || s === "LOOK_AROUND" || s === "SLEEP" || s === "LIE_DOWN";
+    if (!calm || this.dragging) return true;
+    if (this.yarnVis > 0.01) return true;
+    if (this.particles.bounds() !== null) return true;
+    return this.phys.speed() > 4;
+  }
+
+  /** push the mood snapshot to the main process (~1Hz) so the local control
+   *  server can serve it on GET /state — no screenshots, just rhythm + mood. */
+  private syncAffectState(): void {
+    const now = performance.now();
+    if (now - this.lastStateSent < 1000) return;
+    const dtSec = Math.min(2, (now - this.lastStateSent) / 1000);   // clamp first tick / stalls
+    this.lastStateSent = now;
+    const snap = this.affectEngine.snapshot();
+    this.achv.update(snap, dtSec);
+    this.bond.update(snap, dtSec);
+    const ids = this.achv.unlockedIds();
+    const unlocked = unlockedCoats(ids);
+    const unlockedAcc = unlockedAccessories(ids);
+    window.bridge.reportState?.({
+      ...snap,
+      name: this.behavior.petName,
+      coat: this.renderer.coat,
+      coats: COATS.map((c) => ({
+        name: c.name, label: c.label, unlocked: unlocked.has(c.name),
+        need: coatRequirement(c.name) ?? null,
+        color: Object.values(c.map)[0] ?? "#2E2B3C",
+      })),
+      accessory: this.renderer.accessory,
+      accessories: ACCESSORIES.map((a) => ({
+        name: a.name, label: a.label, unlocked: unlockedAcc.has(a.name),
+        need: accessoryRequirement(a.name) ?? null,
+      })),
+      achievements: this.achv.summary(),
+      achList: this.achv.list(),
+      bond: this.bond.summary(),
+    });
   }
 
   /**
@@ -266,39 +428,37 @@ export class Cat {
     // Clear only the area around the cat (union of last + current), not the
     // whole full-screen canvas — big idle-CPU win. Generous margin covers the
     // sprite cell, particles, the yarn ball, and squash/stretch overshoot.
-    const p = this.phys.pos;
-    // Base rect around the cat (covers the sprite cell + squash/stretch overshoot).
-    let cur = { x: p.x - 150, y: p.y - 215, w: 300, h: 265 };
-    // Particles & the yarn ball are anchored in world space — if the cat is moved
-    // away while they're alive they'd strand (e.g. a pink heart/confetti spot), so
-    // union their actual bounds into the cleared region rather than just widening
-    // around the (now-distant) cat.
-    const pb = this.particles.bounds();
-    if (pb) cur = unionRect(cur, pb);
-    if (this.yarnVis > 0.01) {
-      const s = this.renderer.scale;
-      const yc = { x: p.x + 16 * s + this.yox, y: p.y - 6 * s + this.yoy };
-      cur = unionRect(cur, { x: yc.x - 16 * s, y: yc.y - 16 * s, w: 32 * s, h: 32 * s });
-    }
-    if (this.lastClear) {
-      const x0 = Math.min(cur.x, this.lastClear.x), y0 = Math.min(cur.y, this.lastClear.y);
-      const x1 = Math.max(cur.x + cur.w, this.lastClear.x + this.lastClear.w);
-      const y1 = Math.max(cur.y + cur.h, this.lastClear.y + this.lastClear.h);
-      this.renderer.clearRegion(x0, y0, x1 - x0, y1 - y0);
-    } else {
-      this.renderer.clearRegion(cur.x, cur.y, cur.w, cur.h);
-    }
-    this.lastClear = cur;
+    // Full-frame clear. A region-only clear is a micro-optimisation that can
+    // leave "trails" — a stray accessory / yarn ball / particle drawn just
+    // outside the moving clear window stays on the canvas (e.g. a detached hat
+    // floating away from the cat). Clearing the whole transparent canvas each
+    // frame is cheap (one GPU clear; we still only draw a single small sprite)
+    // and makes trails impossible.
+    this.renderer.clear();
     const frame = this.anim.frame();
     const faceLeft = this.behavior.facingLeft();
     const opts = this.visualOpts();
-    this.renderer.draw(frame, this.phys.pos, faceLeft, opts);
-    // eyes track the cursor ONLY in follow mode; otherwise they stay forward
-    // (so a drag-only cat doesn't "follow" you with its eyes either)
-    const track = this.behavior.autonomous;
-    this.renderer.drawPupils(frame, this.phys.pos, faceLeft, opts, this.input.cursor, track);
+    if (this.renderer.isIllustrated) {
+      // painted single-image cat: engine transforms drive the motion; the
+      // painting has its own eyes, so no runtime pupils.
+      this.renderer.drawIllustrated(this.phys.pos, faceLeft, opts);
+    } else {
+      // grounded contact shadow first (faint while held/airborne, wider when
+      // the body squashes low) so the cat sits ON the desktop, not floating.
+      const s = this.state();
+      let shadow = 1;
+      if (this.dragging) shadow = 0.32;
+      else if (s === "FALL" || s === "JUMP" || s === "PEEK") shadow = 0.5;
+      const wide = 1 + Math.max(0, 1 - (opts.sy ?? 1)) * 2.2;   // squash spreads it
+      this.renderer.drawShadow(this.phys.pos, shadow, wide);
+      this.renderer.draw(frame, this.phys.pos, faceLeft, opts);
+      // eyes track the cursor ONLY in follow mode; otherwise they stay forward
+      const track = this.behavior.autonomous;
+      this.renderer.drawPupils(frame, this.phys.pos, faceLeft, opts, this.input.cursor, track);
+      this.renderer.drawAccessory(this.phys.pos, faceLeft, opts);
+    }
     this.particles.draw(this.renderer.context, this.renderer.scale);
-    if (this.yarnVis > 0.01) {
+    if (!this.renderer.isIllustrated && this.yarnVis > 0.01) {
       const s = this.renderer.scale;
       const center = { x: this.phys.pos.x + 16 * s + this.yox, y: this.phys.pos.y - 6 * s + this.yoy };
       const paw = { x: this.phys.pos.x + 7 * s, y: this.phys.pos.y - 11 * s };
@@ -313,14 +473,30 @@ export class Cat {
     const s = this.state();
     const now = performance.now();
     const o: DrawOpts = {};
+    // illustrated cat has no frame-based breathing, so add a gentle idle breath
+    if (this.renderer.isIllustrated && (s === "SIT" || s === "IDLE" || s === "LOOK_AROUND" || s === "SLEEP")) {
+      const b = Math.sin(now * 0.0019);
+      o.sy = 1 + 0.018 * b; o.sx = 1 - 0.012 * b; o.bob = -1.5 * (b + 1);
+      if (s !== "SLEEP") {   // gentle idle sway + lean toward the cursor ("watching you")
+        const sway = Math.sin(now * 0.0011) * 0.03;
+        const dx = this.input.cursor.x - this.phys.pos.x;
+        const lean = Math.max(-0.12, Math.min(0.12, dx * 0.0006));
+        o.rot = sway + lean;
+      }
+    }
     if (s === "HUNT") { o.sy = 0.85; o.sx = 1.06; }
     if (s === "WALK") o.bob = Math.sin(now * 0.012) * 2;
     if (s === "OVERHEAT") o.tint = true;
-    if (s === "PEEK") o.clipTopHalf = true;
+    // PEEK no longer clips — the cat sits past the right edge and is clipped by
+    // the screen edge naturally, so it reads as peeking in from the side.
     // (no DRAG stretch — the cat keeps its normal proportions while dragged)
     if (s === "SHAKE") {
       const decay = this.dragging ? 1 : Math.max(0, 1 - (now - this.shakeT0) / 400);
       o.rot = Math.sin(now * 0.04) * (15 * Math.PI / 180) * decay;
+    }
+    if (this.bounceSquash > 0.01) {   // splat against the wall on impact
+      o.sx = (o.sx ?? 1) * (1 + this.bounceSquash * 0.4);
+      o.sy = (o.sy ?? 1) * (1 - this.bounceSquash * 0.4);
     }
     return o;
   }
@@ -353,15 +529,7 @@ export class Cat {
     const now = performance.now();
     if (now - this.lastHitboxSent < 60) return; // ~16fps throttle
     this.lastHitboxSent = now;
-    let box = this.renderer.hitbox(this.phys.pos);
-    // when timer chips are shown, widen the interactive region upward to cover
-    // them so their ✕ buttons are clickable (window isn't click-through there)
-    if (this.timersVisible) {
-      const p = this.phys.pos;
-      const top = p.y - this.headOff - 64, left = p.x - 85, right = p.x + 85;
-      const x = Math.min(box.x, left), y = Math.min(box.y, top);
-      box = { x, y, w: Math.max(box.x + box.w, right) - x, h: box.y + box.h - y };
-    }
+    const box = this.visibleHitbox();
     // convert canvas coords -> screen coords using the display origin held in InputController
     const ox = this.input.cursorScreen.x - this.input.cursor.x;
     const oy = this.input.cursorScreen.y - this.input.cursor.y;
@@ -443,7 +611,7 @@ export class Cat {
 
   private installDragHandlers(canvas: HTMLCanvasElement): void {
     const overCat = (e: MouseEvent): boolean => {
-      const hb = this.renderer.hitbox(this.phys.pos);
+      const hb = this.visibleHitbox();
       return e.clientX >= hb.x && e.clientX <= hb.x + hb.w &&
              e.clientY >= hb.y && e.clientY <= hb.y + hb.h;
     };
@@ -454,12 +622,17 @@ export class Cat {
       if (this.behavior.isRinging()) { this.behavior.ackMeeting(); return; }
       // click cat to dismiss a meow bubble or to bring it out of peek mode
       if (this.state() === "MEOW") { this.behavior.dismissMeow(); return; }
-      if (this.behavior.peekMode) { this.behavior.revealFromPeek(); return; }
+      // grabbing the cat while it's peeking pulls it out AND stops peeking, so
+      // it can always be picked up and repositioned (no "stuck at the edge").
+      if (this.behavior.peekMode) this.behavior.setPeek(false);
       this.dragging = true;
       this.dragLastX = e.clientX;
       this.dragDir = 0;
       this.dragReversals.length = 0;
       this.lastMoveT = performance.now();
+      this.dragVel = { x: 0, y: 0 };
+      this.dragPrev = { x: e.clientX, y: e.clientY };
+      this.dragPrevT = this.lastMoveT;
       window.bridge.setDragging(true);   // keep mouse captured during spring lag
       this.behavior.beginDrag();
       this.behavior.dragTo({ x: e.clientX, y: e.clientY + HOLD });
@@ -471,6 +644,12 @@ export class Cat {
       // shake detection: count rapid horizontal direction reversals
       const now = performance.now();
       this.lastMoveT = now;
+      // smoothed pointer velocity (px/s) for the throw-on-release
+      const dtv = Math.max(0.008, (now - this.dragPrevT) / 1000);
+      this.dragVel.x = this.dragVel.x * 0.4 + ((e.clientX - this.dragPrev.x) / dtv) * 0.6;
+      this.dragVel.y = this.dragVel.y * 0.4 + ((e.clientY - this.dragPrev.y) / dtv) * 0.6;
+      this.dragPrev = { x: e.clientX, y: e.clientY };
+      this.dragPrevT = now;
       const dx = e.clientX - this.dragLastX;
       this.dragLastX = e.clientX;
       if (Math.abs(dx) > 3) {
@@ -486,7 +665,9 @@ export class Cat {
       this.dragging = false;
       this.dragReversals.length = 0;
       window.bridge.setDragging(false);
-      this.behavior.endDrag();
+      // flung hard enough -> throw it (arc + bounce); otherwise gently settle
+      if (Math.hypot(this.dragVel.x, this.dragVel.y) > 700) this.behavior.throwCat({ ...this.dragVel });
+      else this.behavior.endDrag();
     });
     // Safety net from main's global mouse-up hook: if the window never received
     // the mouseup (overlay went click-through mid-interaction), drop the drag

@@ -59,7 +59,8 @@ declare global {
       onCursor: (cb: (c: Vec2) => void) => void;
       onKeyActivity: (cb: () => void) => void;
       onScrollActivity: (cb: (rot: number) => void) => void;
-      onActiveWindow: (cb: (d: { app: string; title: string }) => void) => void;
+      onAppFocus?: (cb: (title: string) => void) => void;
+      reportState?: (s: unknown) => void;
       setHitbox: (box: { x: number; y: number; w: number; h: number }) => void;
       setDragging: (v: boolean) => void;
       onSetAutonomous: (cb: (v: boolean) => void) => void;
@@ -74,7 +75,13 @@ declare global {
       onboardingDone: () => void;
       onDragCancel: (cb: () => void) => void;
       onSetPomodoro: (cb: (cfg: { focus: number; brk: number; long: number; every: number; start?: boolean }) => void) => void;
-      onSetMeeting: (cb: (cfg: { mins?: number; atMs?: number; label: string; preMin?: number }) => void) => void;
+      onSetMeeting: (cb: (cfg: { mins: number; label: string }) => void) => void;
+      setName: (name: string) => void;
+      onSetName?: (cb: (name: string) => void) => void;
+      setCoat?: (name: string) => void;
+      setAccessory?: (name: string) => void;
+      giveTreat?: () => void;
+      getStatus?: () => Promise<Record<string, unknown>>;
     };
     cat: import("./Cat").Cat; // public API: cat.startThinking() / cat.finishThinking()
   }

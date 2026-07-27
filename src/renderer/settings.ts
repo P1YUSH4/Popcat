@@ -1,5 +1,6 @@
-// Settings window: lets the user type custom Pomodoro durations + a meeting
-// reminder, then sends them to the overlay cat via the preload bridge.
+// Settings window: name the cat, pick an (unlocked) coat, see mood + trophies,
+// and set custom Pomodoro / meeting timers. Talks to the overlay cat via the
+// preload bridge; reads live status with bridge.getStatus().
 const num = (id: string, def: number): number => {
   const v = parseInt((document.getElementById(id) as HTMLInputElement).value, 10);
   return isNaN(v) ? def : v;
@@ -13,62 +14,89 @@ function flash(id: string, msg: string): void {
   setTimeout(() => { if (el.textContent === msg) el.textContent = ""; }, 2500);
 }
 
-// ---- persisted settings (General + Context) ------------------------------
-type Rules = { pattern: string; mode: string }[];
-let rules: Rules = [];
-const el = (id: string) => document.getElementById(id) as HTMLInputElement;
+interface CoatInfo { name: string; label: string; unlocked: boolean; need: string | null; color: string; }
+interface AccInfo { name: string; label: string; unlocked: boolean; need: string | null; }
+interface Trophy { id: string; title: string; unlocked: boolean; }
+interface BondInfo { xp: number; level: number; levelName: string; nextXp: number; dailyCareStreak: number; treatAvailable: boolean; }
+interface Status {
+  name?: string; coat?: string; accessory?: string; mood?: string; rhythm?: string;
+  coats?: CoatInfo[]; accessories?: AccInfo[]; achList?: Trophy[]; bond?: BondInfo;
+  achievements?: { unlocked: number; total: number; dailyStreak: number; focusMinToday: number };
+}
 
-function renderRules(): void {
-  const box = document.getElementById("rules")!;
+let nameTouched = false;
+document.getElementById("petName")!.addEventListener("input", () => { nameTouched = true; });
+
+function render(s: Status): void {
+  const a = s.achievements;
+  const b = s.bond;
+  document.getElementById("mood")!.textContent =
+    `${s.name || "Your cat"} — feeling ${s.mood || "…"}` +
+    (a ? `  ·  🔥 ${a.dailyStreak}d streak  ·  🏆 ${a.unlocked}/${a.total}` : "");
+
+  // Bond display
+  if (b) {
+    const pct = Math.round((b.xp / b.nextXp) * 100);
+    document.getElementById("bondInfo")!.textContent = `${b.levelName} (Lv${b.level})  ·  ${b.xp}/${b.nextXp} XP  ·  📅 ${b.dailyCareStreak}d`;
+    document.getElementById("bondProgress")!.style.width = `${Math.min(100, pct)}%`;
+    const btn = document.getElementById("treatBtn") as HTMLButtonElement;
+    btn.disabled = !b.treatAvailable;
+    btn.style.opacity = b.treatAvailable ? "1" : "0.5";
+    btn.title = b.treatAvailable ? "Give your cat a treat" : "Already gave a treat today";
+  }
+
+  if (!nameTouched && s.name) (document.getElementById("petName") as HTMLInputElement).value = s.name;
+
+  // coat swatches
+  const coats = s.coats || [];
+  const titleById = new Map((s.achList || []).map((t) => [t.id, t.title]));
+  const box = document.getElementById("coats")!;
   box.innerHTML = "";
-  rules.forEach((r, i) => {
-    const row = document.createElement("div");
-    row.className = "row";
-    row.innerHTML = `<label>${r.pattern} → ${r.mode}</label>`;
-    const x = document.createElement("span");
-    x.textContent = "✕"; x.style.cssText = "cursor:pointer;color:#d66;font-weight:bold";
-    x.addEventListener("click", () => { rules.splice(i, 1); renderRules(); pushConfig(); });
-    row.appendChild(x); box.appendChild(row);
-  });
+  for (const c of coats) {
+    const b = document.createElement("button");
+    b.className = "swatch" + (c.name === s.coat ? " sel" : "") + (c.unlocked ? "" : " locked");
+    b.style.background = c.color;
+    b.title = c.unlocked ? c.label : `${c.label} — locked (earn “${titleById.get(c.need || "") || c.need}”)`;
+    if (!c.unlocked) { const lk = document.createElement("span"); lk.className = "lk"; lk.textContent = "🔒"; b.appendChild(lk); }
+    if (c.unlocked) b.addEventListener("click", () => { window.bridge.setCoat?.(c.name); });
+    box.appendChild(b);
+  }
+
+  // accessory chips
+  const accBox = document.getElementById("accs")!;
+  accBox.innerHTML = "";
+  for (const ac of s.accessories || []) {
+    const c = document.createElement("button");
+    c.className = "chip" + (ac.name === s.accessory ? " sel" : "") + (ac.unlocked ? "" : " locked");
+    c.textContent = (ac.unlocked ? "" : "🔒 ") + ac.label;
+    c.title = ac.unlocked ? ac.label : `${ac.label} — locked (earn “${titleById.get(ac.need || "") || ac.need}”)`;
+    if (ac.unlocked) c.addEventListener("click", () => { window.bridge.setAccessory?.(ac.name); });
+    accBox.appendChild(c);
+  }
+
+  // trophy pills
+  const tro = document.getElementById("trophies")!;
+  tro.innerHTML = "";
+  for (const t of s.achList || []) {
+    const p = document.createElement("span");
+    p.className = "tro" + (t.unlocked ? " got" : "");
+    p.textContent = (t.unlocked ? "✓ " : "🔒 ") + t.title;
+    tro.appendChild(p);
+  }
 }
 
-function pushConfig(): void {
-  window.bridge.setConfig({
-    autostart: el("autostart").checked,
-    sleepMin: Math.max(1, num("sleepMin", 1)),
-    hydrationMin: Math.max(0, num("hydrationMin", 15)),
-    leisureNudge: el("leisureNudge").checked,
-    contextEnabled: el("contextEnabled").checked,
-    sound: { muted: el("muted").checked, volume: num("volume", 100) / 100 },
-    contextRules: rules,
-  });
+async function refresh(): Promise<void> {
+  try { const s = await window.bridge.getStatus?.(); if (s) render(s as Status); } catch { /* overlay not ready */ }
 }
+refresh();
+setInterval(refresh, 1500);
 
-function loadConfig(cfg: import("./types").PaoConfig): void {
-  el("autostart").checked = cfg.autostart;
-  el("sleepMin").value = String(cfg.sleepMin);
-  el("hydrationMin").value = String(cfg.hydrationMin);
-  el("leisureNudge").checked = cfg.leisureNudge;
-  el("contextEnabled").checked = cfg.contextEnabled;
-  el("muted").checked = cfg.sound.muted;
-  el("volume").value = String(Math.round(cfg.sound.volume * 100));
-  rules = cfg.contextRules || [];
-  renderRules();
-}
-
-for (const id of ["autostart", "sleepMin", "hydrationMin", "leisureNudge", "contextEnabled", "muted", "volume"]) {
-  document.getElementById(id)!.addEventListener("change", pushConfig);
-}
-document.getElementById("addRule")!.addEventListener("click", () => {
-  const pattern = el("rulePattern").value.trim();
-  if (!pattern) return;
-  rules.push({ pattern, mode: el("ruleMode").value });
-  el("rulePattern").value = "";
-  renderRules(); pushConfig();
+document.getElementById("saveName")!.addEventListener("click", () => {
+  const name = str("petName", "");
+  window.bridge.setName(name);
+  nameTouched = false;
+  flash("nameOk", name ? `Named ${name} ✓` : "Name cleared ✓");
 });
-
-window.bridge.getConfig().then(loadConfig);
-window.bridge.onConfig(loadConfig);
 
 document.getElementById("startPomo")!.addEventListener("click", () => {
   const cfg = { focus: num("focus", 25), brk: num("brk", 5), long: num("long", 15), every: num("every", 4), start: true };
@@ -101,4 +129,9 @@ document.getElementById("setMeeting")!.addEventListener("click", () => {
     window.bridge.setMeeting({ mins, label, preMin });
     flash("meetOk", mins > 0 ? `Reminder in ${mins} min ✓` : "Reminder set (now) ✓");
   }
+});
+
+document.getElementById("treatBtn")!.addEventListener("click", () => {
+  window.bridge.giveTreat?.();
+  flash("treatOk", "Yum! 💕");
 });

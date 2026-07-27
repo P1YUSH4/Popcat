@@ -37,7 +37,10 @@ export class InputController {
     });
     window.bridge.onScrollActivity((rot: number) => {
       if (rot) this.scrollDir = rot > 0 ? 1 : -1;   // +1 = down, -1 = up
-      this.scrollEnergy = Math.min(1.4, this.scrollEnergy + 0.5);
+      // one notch gives a clear reaction, but cap low so the cat settles soon
+      // after you STOP (the trackpad streams events, so a high cap would linger
+      // ~2.4s). With the decay below this settles ~0.45s after the last event.
+      this.scrollEnergy = Math.min(1.0, this.scrollEnergy + 0.8);
     });
     window.bridge.onActiveWindow(({ app, title }) => { this.activeApp = app; this.activeTitle = title; });
   }
@@ -61,7 +64,7 @@ export class InputController {
   /** Call once per frame to decay transient signals. */
   update(dt: number): void {
     this.keyEnergy = Math.max(0, this.keyEnergy - dt * 1.2);
-    this.scrollEnergy = Math.max(0, this.scrollEnergy - dt * 1.5);
+    this.scrollEnergy = Math.max(0, this.scrollEnergy - dt * 1.6);
     // cursor speed decays if no movement events arrive
     this.cursorSpeed *= Math.max(0, 1 - dt * 4);
     // drop keystroke timestamps older than 1s
@@ -73,6 +76,8 @@ export class InputController {
   }
 
   isTyping(): boolean { return this.keyEnergy > 0.4; }
+  /** keystrokes counted in the last ~1s (typing cadence for the affect engine). */
+  keysPerSec(): number { return this.keyTimes.length; }
   /** Sustained burst of keystrokes -> overheat. */
   isTypingFast(threshold = 7): boolean { return this.keyTimes.length >= threshold; }
   isCursorFast(threshold = 700): boolean { return this.cursorSpeed > threshold; }
@@ -81,7 +86,7 @@ export class InputController {
   /** ms since the cursor last actually moved (for the hunt give-up timer) */
   cursorIdleMs(): number { return performance.now() - this.lastMoveT; }
   isCursorSlow(threshold = 100): boolean { return this.cursorSpeed < threshold; }
-  isScrolling(): boolean { return this.scrollEnergy > 0.3; }
+  isScrolling(): boolean { return this.scrollEnergy > 0.25; }
   /** current scroll intensity 0..1.4 (for the spinning yarn-ball speed). */
   scrollPower(): number { return this.scrollEnergy; }
   /** behavior mode derived from the focused window (focus/coding/ai/leisure/neutral). */

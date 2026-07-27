@@ -19,6 +19,14 @@ async function main(): Promise<void> {
   const cat = new Cat(canvas, sheet, meta);
   window.cat = cat; // expose public API: window.cat.startThinking() / finishThinking()
 
+  // Illustrated (painted) cat: if a cleaned image is bundled, use it instead of
+  // the pixel sprite. Optional — the pixel cat is the fallback.
+  try {
+    const illu = await loadImage("assets/sprites/cat_idle.png");
+    cat.setIllustrated(illu);
+    console.log("%cPao: illustrated mode 🎨", "color:#7cc4d6");
+  } catch { /* no illustrated asset -> pixel mode */ }
+
   // tray-menu controls (the overlay isn't focusable, so DevTools isn't usable)
   window.bridge.onDo((action) => {
     if (action === "stretch") cat.stretch();
@@ -31,6 +39,7 @@ async function main(): Promise<void> {
     else if (action === "celebrate") cat.celebrate();
     else if (action === "worried") cat.worried();
     else if (action === "hydrate") cat.hydrate();
+    else if (action === "treat") cat.giveTreat();
     else if (action === "pomo:start") cat.startPomodoro();
     else if (action === "pomo:stop") cat.stopPomodoro();
     else if (action === "pomo:pause") cat.pausePomodoro();
@@ -38,42 +47,49 @@ async function main(): Promise<void> {
     else if (action === "pomo:skip") cat.skipPomodoro();
     else if (action === "focus") cat.focusAlert();
     else if (action.startsWith("meeting:")) cat.scheduleMeeting(parseInt(action.split(":")[1], 10) || 0);
+    else if (action.startsWith("coat:")) cat.setCoat(action.split(":")[1]);
+    else if (action.startsWith("acc:")) cat.setAccessory(action.split(":")[1]);
+    else if (action === "throw") cat.tossDemo();
+    else if (action === "autonomous:on") cat.setAutonomous(true);
+    else if (action === "autonomous:off") cat.setAutonomous(false);
+    else if (action === "peek:on") cat.setPeek(true);
+    else if (action === "peek:off") cat.setPeek(false);
     else if (action === "mute:on") sound.muted = true;
     else if (action === "mute:off") sound.muted = false;
   });
 
   // custom timers from the settings window
   window.bridge.onSetPomodoro((cfg) => cat.configurePomodoro(cfg));
-  window.bridge.onSetMeeting((cfg) => {
-    if (typeof cfg.atMs === "number") cat.scheduleMeetingAt(cfg.atMs, cfg.label, cfg.preMin);
-    else cat.scheduleMeeting(cfg.mins ?? 0, cfg.label, cfg.preMin);
-  });
+  window.bridge.onSetMeeting((cfg) => cat.scheduleMeeting(cfg.mins, cfg.label));
+  window.bridge.onSetName?.((name) => cat.setName(name));
 
-  // persisted settings: apply on load + on every change
-  try { cat.applyConfig(await window.bridge.getConfig()); } catch { /* defaults */ }
-  window.bridge.onConfig((cfg) => cat.applyConfig(cfg));
-
-  // dev-tool reactions (git / tests / CI via the `pao` CLI or control server)
-  window.bridge.onReact(({ type, msg }) => cat.react(type, msg));
-
-  // unlock audio on the first interaction (autoplay-policy fallback)
-  window.addEventListener("mousedown", () => sound.unlock(), { once: true });
-
-  // Adaptive frame rate: ~33fps while the cat is doing something, but drop to
-  // ~6fps when it's just sitting/sleeping (pixel-art timing is frame-duration
-  // based, so this is invisible) — big idle-CPU saving for an always-on app.
-  const DT_ACTIVE = 1000 / 33, DT_CALM = 1000 / 6;
+  // Render at up to 60fps so continuous MOTION (walking, eye-tracking, throw
+  // arcs, squash/stretch) is smooth — sprite frame-stepping is duration-based,
+  // but physics/position update per render frame, so the old 33fps cap made
+  // movement choppy. The region-only clear keeps the per-frame cost tiny.
+  // Adaptive frame rate: full 60fps when there's motion/effects, but drop to
+  // ~30fps when the cat is calmly idle/asleep — halves idle CPU/GPU without any
+  // visible choppiness on the slow breathing loop.
+  const HI = 1000 / 60, LO = 1000 / 30;
   let last = performance.now();
   function frame(now: number): void {
     requestAnimationFrame(frame);
+    const cap = cat.busy() ? HI : LO;
     const elapsed = now - last;
-    const minDt = cat.lowActivity() ? DT_CALM : DT_ACTIVE;
-    if (elapsed < minDt) return;             // skip frames faster than the cap
+    if (elapsed < cap) return;               // skip frames faster than the cap
     last = now;
     cat.update(Math.min(0.05, elapsed / 1000)); // clamp dt (tab stalls)
     cat.render();
   }
   requestAnimationFrame(frame);
+
+  // first-run onboarding: greet once, then remember we've said hello
+  try {
+    if (!localStorage.getItem("pao.onboarded")) {
+      localStorage.setItem("pao.onboarded", "1");
+      setTimeout(() => cat.welcome(), 1500);
+    }
+  } catch { /* ignore */ }
 
   // tiny console helper
   console.log("%cPao is awake 🐾  try: cat.startThinking() / cat.finishThinking()", "color:#7cc4d6");

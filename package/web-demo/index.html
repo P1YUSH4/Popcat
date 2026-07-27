@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pao — Pixel Cat Widget (web demo)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1d26;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace; color: #e8e8ef; }
+  /* faux desktop so there's something to interact over */
+  #desk { position: fixed; inset: 0;
+    background:
+      radial-gradient(1200px 700px at 70% 20%, #283041, #1b1d26 70%);
+  }
+  #desk .hint { position: absolute; left: 24px; top: 20px; max-width: 420px; opacity: .55; font-size: 13px; line-height: 1.5; }
+  /* the cat lives on this canvas; pointer-events handled in JS via hit-test */
+  #stage { position: fixed; inset: 0; z-index: 9999; image-rendering: pixelated; pointer-events: none; }
+
+  /* control bar */
+  #bar { position: fixed; z-index: 10001; left: 50%; bottom: 14px; transform: translateX(-50%);
+    display: flex; gap: 6px; background: #20232f; border: 2px solid #3a3f52; border-radius: 10px;
+    padding: 8px; box-shadow: 0 6px 24px #0008; }
+  #bar button { font: inherit; font-size: 12px; background: #2c3142; color: #e8e8ef; border: 1px solid #444b61;
+    border-radius: 7px; padding: 7px 10px; cursor: pointer; }
+  #bar button:hover { background: #39405a; }
+
+  /* settings panel */
+  #panel { position: fixed; z-index: 10002; width: 250px; background: #20232f; border: 2px solid #4a5170;
+    border-radius: 10px; padding: 14px; display: none; box-shadow: 0 10px 30px #000a; font-size: 13px; }
+  #panel h3 { margin: 0 0 10px; font-size: 14px; }
+  #panel label { display: block; margin: 10px 0 4px; opacity: .8; }
+  #panel .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  #panel .sw { width: 26px; height: 26px; border-radius: 6px; border: 2px solid #0003; cursor: pointer; }
+  #panel .sw.active { outline: 2px solid #fff; }
+  #panel input[type=range], #panel input[type=text] { width: 100%; }
+  #panel .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  #panel .close { position: absolute; right: 10px; top: 8px; cursor: pointer; opacity: .6; }
+
+  /* speech / think bubbles drawn as DOM for crisp text */
+  .bubble { position: fixed; z-index: 10000; background: #f0f4f6; color: #2b263a; border: 2px solid #2b263a;
+    border-radius: 8px; padding: 5px 9px; font-size: 12px; transform: translate(-50%, -100%);
+    pointer-events: none; white-space: nowrap; }
+  .bubble.click { pointer-events: auto; cursor: pointer; }
+</style>
+</head>
+<body>
+  <div id="desk">
+    <div class="hint">
+      <b>Pao — web demo</b><br>
+      • Move the cursor → eyes track; move far → it walks to you; flick fast → it hunts.<br>
+      • Hover the cat → purr (hearts). Type → knead; type fast → overheat (steam).<br>
+      • Drag the cat → mochi stretch; shake while dragging → wiggle; throw to fling.<br>
+      • Scroll the page → paper unspool. Right-click the cat → settings.<br>
+      • Buttons below trigger Think / Jump / Stretch / Meow / Peek.
+    </div>
+    <!-- tall spacer so the page can actually scroll (paper-scroll trigger) -->
+    <div style="height:3000px"></div>
+  </div>
+
+  <canvas id="stage"></canvas>
+
+  <div id="bar">
+    <button data-act="think">Think</button>
+    <button data-act="jump">Jump</button>
+    <button data-act="stretch">Stretch</button>
+    <button data-act="meow">Meow</button>
+    <button data-act="peek">Peek</button>
+    <button data-act="settings">⚙ Settings</button>
+  </div>
+
+  <div id="panel">
+    <span class="close" id="panelClose">✕</span>
+    <h3>🐾 Settings</h3>
+    <label>Fur color</label>
+    <div class="swatches" id="swatches"></div>
+    <label>Name</label>
+    <input type="text" id="catName" value="Pao" maxlength="16" />
+    <label>Stretch reminder (min): <span id="strVal">5</span></label>
+    <input type="range" id="strInterval" min="0" max="30" value="5" />
+    <label class="row"><span>Peek mode</span><input type="checkbox" id="peekToggle" /></label>
+    <label class="row"><span>Sound</span><input type="checkbox" id="soundToggle" /></label>
+    <label>Pomodoro focus (min): <span id="pomoVal">25</span></label>
+    <input type="range" id="pomo" min="1" max="60" value="25" />
+  </div>
+
+<script>
+"use strict";
+/* ============================================================================
+   Pao — single-file pixel cat widget.  Cat is drawn PROCEDURALLY at 32x32 and
+   scaled up nearest-neighbor.  All timing via performance.now() (frame-rate
+   independent); per-state fps; FSM + physics + particles + eye tracking.
+============================================================================ */
+
+const GRID = 32, SCALE = 5;            // cat drawn at 32px, shown at 160px
+const FOOT = { x: 16, y: 28 };         // foot anchor in sprite-local px
+const EYES = [{ x: 12, y: 10 }, { x: 20, y: 10 }]; // per spec
+
+// ---- palette ----
+const C = {
+  out: "#2b263a", body: "#7cc4d6", shadow: "#569cb0", belly: "#f0f4f6",
+  eye: "#36304a", accent: "#f796a8", steam: "#dfe8ec", heart: "#f0708c",
+};
+const FUR = {            // tint overlays (source-atop, semi-alpha) for presets
+  grey:   null,                       // base
+  orange: "rgba(247,170,70,0.55)",
+  black:  "rgba(40,38,58,0.62)",
+  white:  "rgba(255,255,255,0.40)",
+  calico: "rgba(247,150,90,0.45)",
+  pink:   "rgba(247,150,200,0.45)",
+};
+
+// ---- canvases ----
+const stage = document.getElementById("stage");
+const ctx = stage.getContext("2d");
+const body = document.createElement("canvas"); body.width = body.height = GRID;
+const bc = body.getContext("2d");
+const sil = document.createElement("canvas"); sil.width = sil.height = GRID;
+const sc = sil.getContext("2d");
+const fin = document.createElement("canvas"); fin.width = fin.height = GRID;
+const fc = fin.getContext("2d");
+[ctx, bc, sc, fc].forEach(c => c.imageSmoothingEnabled = false);
+
+function resize() { stage.width = innerWidth; stage.height = innerHeight; ctx.imageSmoothingEnabled = false; }
+addEventListener("resize", resize); resize();
+
+// ============================================================================
+//  PROCEDURAL CAT  — draw one 32x32 pose into bc given pose params
+// ============================================================================
+function px(g, x, y, w, h, col) { g.fillStyle = col; g.fillRect(x, y, w, h); }
+
+function drawPose(p) {
+  bc.clearRect(0, 0, GRID, GRID);
+  const earLift = p.earLift || 0;
+
+  // ears (triangular)
+  for (const s of [-1, 1]) {
+    const ex = 16 + s * 6;
+    px(bc, ex - 1, 4 - earLift, 2, 2, C.body);
+    px(bc, ex - 2, 5 - earLift, 4, 2, C.body);
+    px(bc, ex - 1, 4 - earLift, 2, 1, C.accent === p.earInk ? C.accent : C.accent);
+  }
+  // head
+  px(bc, 8, 5, 16, 2, C.body);
+  px(bc, 6, 7, 20, 8, C.body);
+  px(bc, 8, 15, 16, 1, C.body);
+  px(bc, 9, 11, 14, 4, C.belly);          // lower face light
+  px(bc, 24, 8, 2, 6, C.shadow);          // head shade
+  // body (small)
+  const by = 16;
+  px(bc, 10, by, 12, 10, C.body);
+  px(bc, 13, by + 2, 6, 6, C.belly);      // chest
+  px(bc, 21, by, 1, 9, C.shadow);
+  // tail
+  drawTail(p.tail || 0);
+  // paws (protruding so they read)
+  const lpUp = (p.paw === 1 || p.paw === 3) ? 3 : 0;
+  const rpUp = (p.paw === 2 || p.paw === 3) ? 3 : 0;
+  px(bc, 11, 26 - lpUp, 3, 2, C.belly); px(bc, 12, 27 - lpUp, 1, 1, C.accent);
+  px(bc, 18, 26 - rpUp, 3, 2, C.belly); px(bc, 19, 27 - rpUp, 1, 1, C.accent);
+
+  // face: eyes
+  drawEyes(p.eyes || "open");
+  // nose + mouth
+  px(bc, 15, 12, 2, 1, C.accent);
+  drawMouth(p.mouth || "smile");
+  if (p.blush) { px(bc, 8, 12, 2, 1, C.accent); px(bc, 22, 12, 2, 1, C.accent); }
+  // groom: paw to face
+  if (p.pawFace) px(bc, 14, 10, 2, 3, C.belly);
+  // scratch: hind leg by ear
+  if (p.scratchLeg) px(bc, 23, 6, 2, 4, C.belly);
+}
+
+function drawTail(t) {
+  if (t === 0) { px(bc, 22, 21, 3, 2, C.body); px(bc, 24, 18, 2, 3, C.body); }
+  else if (t === 1) { px(bc, 22, 18, 2, 4, C.body); px(bc, 23, 15, 2, 3, C.body); }
+  else { px(bc, 22, 22, 3, 2, C.body); px(bc, 24, 23, 2, 2, C.body); }
+}
+
+function drawEyes(kind) {
+  for (const e of EYES) {
+    if (kind === "open") {
+      px(bc, e.x - 1, e.y - 2, 3, 5, C.eye);          // dark eye
+      px(bc, e.x - 2, e.y - 1, 5, 3, C.eye);
+      px(bc, e.x - 1, e.y - 1, 3, 2, C.belly);        // sclera (pupil drawn on stage)
+    } else if (kind === "closed" || kind === "squint") {
+      px(bc, e.x - 2, e.y, 4, 1, C.eye);              // line
+    } else if (kind === "happy") {                    // ^ ^
+      px(bc, e.x - 2, e.y + 1, 1, 1, C.eye); px(bc, e.x - 1, e.y, 1, 1, C.eye);
+      px(bc, e.x, e.y - 1, 1, 1, C.eye); px(bc, e.x + 1, e.y, 1, 1, C.eye); px(bc, e.x + 2, e.y + 1, 1, 1, C.eye);
+    } else if (kind === "wide") {
+      px(bc, e.x - 2, e.y - 2, 5, 5, C.eye); px(bc, e.x - 1, e.y - 1, 2, 2, C.belly);
+    } else if (kind === "dizzy") {
+      px(bc, e.x - 2, e.y - 1, 5, 3, C.eye); px(bc, e.x, e.y, 1, 1, C.belly);
+    }
+  }
+}
+function drawMouth(kind) {
+  if (kind === "smile") { px(bc, 14, 14, 1, 1, C.out); px(bc, 15, 15, 2, 1, C.out); px(bc, 17, 14, 1, 1, C.out); }
+  else if (kind === "open") { px(bc, 15, 14, 2, 2, C.out); px(bc, 15, 15, 2, 1, C.accent); }
+  else if (kind === "wide") { px(bc, 14, 14, 4, 3, C.out); px(bc, 15, 15, 2, 1, C.accent); }
+}
+
+// outline + tint -> fin
+function buildSprite(p, tint, redTint) {
+  drawPose(p);
+  // silhouette in outline color
+  sc.clearRect(0, 0, GRID, GRID);
+  sc.globalCompositeOperation = "source-over";
+  sc.drawImage(body, 0, 0);
+  sc.globalCompositeOperation = "source-in";
+  sc.fillStyle = C.out; sc.fillRect(0, 0, GRID, GRID);
+  sc.globalCompositeOperation = "source-over";
+  // compose: outline (4 offsets) then body
+  fc.clearRect(0, 0, GRID, GRID);
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) fc.drawImage(sil, dx, dy);
+  fc.drawImage(body, 0, 0);
+  // fur tint (only on cat pixels)
+  if (tint) { fc.globalCompositeOperation = "source-atop"; fc.fillStyle = tint; fc.fillRect(0, 0, GRID, GRID); fc.globalCompositeOperation = "source-over"; }
+  if (redTint) { fc.globalCompositeOperation = "source-atop"; fc.fillStyle = "rgba(255,70,55,0.38)"; fc.fillRect(0, 0, GRID, GRID); fc.globalCompositeOperation = "source-over"; }
+  return fin;
+}
+
+// ============================================================================
+//  ANIMATION TABLE — per-state frames (pose params) + fps + loop
+// ============================================================================
+const A = {
+  idle:   { fps: 8,  loop: true,  frames: [
+    { tail: 0, eyes: "open" }, { tail: 1, eyes: "open" }, { tail: 0, eyes: "open" }, { tail: 1, eyes: "closed" }] },
+  blink:  { fps: 8,  loop: false, frames: [{ eyes: "open" }, { eyes: "closed" }] },
+  walk:   { fps: 12, loop: true,  frames: [
+    { paw: 1, tail: 1 }, { paw: 0, tail: 0 }, { paw: 2, tail: 1 }, { paw: 1, tail: 0 }, { paw: 0, tail: 1 }, { paw: 2, tail: 0 }] },
+  hunt:   { fps: 18, loop: true,  frames: [
+    { paw: 1, eyes: "wide", earLift: -1, tail: 1 }, { paw: 0, eyes: "wide", earLift: -1 },
+    { paw: 2, eyes: "wide", earLift: -1, tail: 1 }, { paw: 1, eyes: "wide", earLift: -1 },
+    { paw: 0, eyes: "wide", earLift: -1, tail: 1 }, { paw: 2, eyes: "wide", earLift: -1 }] },
+  drag:   { fps: 8,  loop: true,  frames: [
+    { paw: 3, eyes: "happy", mouth: "open", tail: 1 }, { paw: 3, eyes: "dizzy", mouth: "open", tail: 1 },
+    { paw: 3, eyes: "happy", mouth: "open", tail: 1 }, { paw: 3, eyes: "dizzy", mouth: "open", tail: 1 }] },
+  wiggle: { fps: 16, loop: true,  frames: [
+    { paw: 3, eyes: "dizzy", mouth: "open" }, { paw: 3, eyes: "dizzy", mouth: "open" }] },
+  kneadL: { fps: 8,  loop: true,  frames: [{ paw: 1, eyes: "happy" }, { paw: 0, eyes: "happy" }] },
+  kneadR: { fps: 8,  loop: true,  frames: [{ paw: 2, eyes: "happy" }, { paw: 0, eyes: "happy" }] },
+  overheat:{ fps: 8, loop: true,  frames: [
+    { eyes: "dizzy", mouth: "open", blush: true }, { eyes: "dizzy", mouth: "wide", blush: true },
+    { eyes: "dizzy", mouth: "open", blush: true }, { eyes: "dizzy", mouth: "wide", blush: true }] },
+  stretch:{ fps: 10, loop: false, frames: [
+    { eyes: "open" }, { eyes: "closed" }, { eyes: "closed" }, { eyes: "closed" }, { eyes: "open" }, { eyes: "open" }] },
+  purr:   { fps: 6,  loop: true,  frames: [
+    { eyes: "squint", mouth: "smile", blush: true, tail: 1 }, { eyes: "squint", mouth: "smile", blush: true, tail: 2 },
+    { eyes: "squint", mouth: "smile", blush: true, tail: 1 }, { eyes: "happy", mouth: "smile", blush: true, tail: 2 }] },
+  think:  { fps: 4,  loop: true,  frames: [
+    { eyes: "open", tail: 0 }, { eyes: "closed", tail: 0 }, { eyes: "open", tail: 0 }, { eyes: "open", tail: 0 }] },
+  jump:   { fps: 12, loop: false, frames: [
+    { eyes: "open" }, { eyes: "open" }, { eyes: "happy", earLift: 1 }, { eyes: "happy", earLift: 1 }, { eyes: "closed" }] },
+  peek:   { fps: 6,  loop: true,  frames: [{ eyes: "open", earLift: 1 }, { eyes: "open", earLift: 1 }, { eyes: "open" }, { eyes: "open", earLift: 1 }] },
+  paper:  { fps: 12, loop: true,  frames: [
+    { paw: 1, eyes: "open" }, { paw: 3, eyes: "open" }, { paw: 2, eyes: "open" },
+    { paw: 3, eyes: "open" }, { paw: 1, eyes: "open" }, { paw: 0, eyes: "open" }] },
+  meow:   { fps: 6,  loop: true,  frames: [{ mouth: "open", eyes: "open" }, { mouth: "wide", eyes: "happy" }, { mouth: "open", eyes: "open" }] },
+};
+
+// ============================================================================
+//  STATE
+// ============================================================================
+const cat = {
+  state: "idle", frame: 0, lastFrameT: 0,
+  pos: { x: innerWidth / 2, y: innerHeight / 2 },   // foot point (screen)
+  vel: { x: 0, y: 0 },
+  target: { x: innerWidth / 2, y: innerHeight / 2 },
+  faceLeft: false,
+  sx: 1, sy: 1, rot: 0,                              // visual transform
+  // transient timers
+  stateT: 0, lockUntil: 0,
+  // inputs
+  lastKeyT: -9999, keyTimes: [], lastScrollT: -9999, scrollDir: 1,
+  hoverStart: -9999, fastSince: -9999,
+  // drag
+  dragging: false, dragOffY: 0, dragReversals: [], dragLastX: 0, dragDir: 0, lastMoveT: 0,
+  recentPts: [],
+  // config
+  fur: null, name: "Pao", peek: false, sound: false, stretchMin: 5,
+  lastStretch: 0, lastBlink: 0, nextBlink: 4000, lastIdleLife: 0,
+};
+
+const mouse = { x: innerWidth / 2, y: innerHeight / 2, px: 0, py: 0, vx: 0, vy: 0, speed: 0, lastT: 0 };
+const particles = [];
+let now = performance.now();
+
+// ---- helpers ----
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+
+function catCenter() { return { x: cat.pos.x, y: cat.pos.y - (FOOT.y - 14) * SCALE * cat.sy }; }
+function catBBox() {
+  const w = GRID * SCALE * cat.sx, h = GRID * SCALE * cat.sy;
+  return { x: cat.pos.x - 16 * SCALE * cat.sx, y: cat.pos.y - FOOT.y * SCALE * cat.sy, w, h };
+}
+function overCat(mx, my) { const b = catBBox(); return mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h; }
+
+function setState(s, opts = {}) {
+  if (cat.state === s && !opts.force) return;
+  cat.state = s; cat.frame = 0; cat.stateT = 0; cat.lastFrameT = now;
+  cat.lockUntil = opts.lockMs ? now + opts.lockMs : 0;
+  cat.onDone = opts.onDone || null;
+}
+const locked = () => now < cat.lockUntil;
+
+// ============================================================================
+//  INPUT
+// ============================================================================
+addEventListener("mousemove", (e) => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  if (cat.dragging) {
+    cat.target.x = e.clientX; cat.target.y = e.clientY + cat.dragOffY;
+    cat.lastMoveT = now;
+    cat.recentPts.push({ x: e.clientX, y: e.clientY, t: now });
+    if (cat.recentPts.length > 6) cat.recentPts.shift();
+    const dx = e.clientX - cat.dragLastX; cat.dragLastX = e.clientX;
+    if (Math.abs(dx) > 4) { const d = Math.sign(dx); if (cat.dragDir && d !== cat.dragDir) cat.dragReversals.push(now); cat.dragDir = d; }
+    cat.dragReversals = cat.dragReversals.filter(t => now - t < 500);
+  }
+});
+addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  if (overCat(e.clientX, e.clientY)) {
+    cat.dragging = true; cat.dragOffY = cat.pos.y - e.clientY;
+    cat.dragLastX = e.clientX; cat.dragDir = 0; cat.dragReversals = []; cat.recentPts = [];
+    cat.lastMoveT = now; setState("drag", { lockMs: 1e9 });
+    e.preventDefault();
+  }
+});
+addEventListener("mouseup", () => {
+  if (!cat.dragging) return;
+  cat.dragging = false; cat.lockUntil = 0;
+  // throw: release velocity from recent points
+  const pts = cat.recentPts; let vx = 0, vy = 0;
+  if (pts.length >= 2) { const a = pts[0], b = pts[pts.length - 1], dt = Math.max(16, b.t - a.t) / 1000; vx = (b.x - a.x) / dt; vy = (b.y - a.y) / dt; }
+  cat.vel.x = clamp(vx, -1600, 1600); cat.vel.y = clamp(vy, -1600, 1600);
+  setState("wiggle", { lockMs: 400, onDone: () => settleToIdle() });
+});
+addEventListener("contextmenu", (e) => { if (overCat(e.clientX, e.clientY)) { e.preventDefault(); openPanel(e.clientX, e.clientY); } });
+addEventListener("keydown", () => { cat.lastKeyT = now; cat.keyTimes.push(now); });
+addEventListener("scroll", () => { onScroll(); }, true);
+addEventListener("wheel", (e) => { cat.scrollDir = e.deltaY >= 0 ? 1 : -1; cat.lastScrollT = now; }, { passive: true });
+function onScroll() { cat.lastScrollT = now; }
+
+function keyRate() { const cut = now - 1000; cat.keyTimes = cat.keyTimes.filter(t => t > cut); return cat.keyTimes.length; }
+
+// ============================================================================
+//  STATE MACHINE  (priority dispatch each frame)
+// ============================================================================
+function settleToIdle() { cat.target = { ...cat.pos }; setState("idle"); }
+
+function updateMouse(dt) {
+  const d = dist(mouse.x, mouse.y, mouse.px, mouse.py);
+  mouse.speed = mouse.speed * 0.6 + (d / Math.max(0.001, dt)) * 0.4;
+  mouse.px = mouse.x; mouse.py = mouse.y;
+}
+
+function think() { setState("think", { lockMs: 0, force: true }); cat.thinking = true; }
+function finishThink() { cat.thinking = false; doJump(); }
+function doJump() { setState("jump", { lockMs: 700, onDone: () => { burstStars(); settleToIdle(); } }); }
+function doStretch() { setState("stretch", { lockMs: 1100, onDone: () => settleToIdle() }); }
+function doMeow(msg) { cat.meowMsg = msg || (cat.name + " says meow!"); setState("meow", { lockMs: 1e9 }); showBubble(cat.meowMsg, true); }
+function togglePeek() { cat.peek = !cat.peek; document.getElementById("peekToggle").checked = cat.peek; }
+
+function brain(dt) {
+  // hard locks (drag/jump/stretch/meow/spin) handled by lockUntil + onDone
+  if (cat.dragging) {
+    // shake -> wiggle while dragging
+    setState(cat.dragReversals.length >= 3 ? "wiggle" : "drag", { lockMs: 1e9, force: false });
+    return;
+  }
+  if (locked()) return;
+  if (cat.thinking) { setState("think"); return; }
+
+  const c = catCenter();
+  const fast = mouse.speed > 400;
+  if (fast) cat.fastSince = cat.fastSince < 0 ? now : cat.fastSince; else cat.fastSince = -9999;
+  const huntReady = cat.fastSince > 0 && now - cat.fastSince > 200;
+  const rate = keyRate();
+  const typing = now - cat.lastKeyT < 1500;
+  const scrolling = now - cat.lastScrollT < 300;
+  const hovering = overCat(mouse.x, mouse.y);
+  const farFromCursor = dist(cat.pos.x, cat.pos.y, mouse.x, mouse.y);
+
+  // OVERHEAT: fast sustained typing
+  if (typing && rate > 8) { cat.overheatUntil = now + 2000; }
+  if (now < (cat.overheatUntil || 0)) { setState("overheat"); emitSteam(); return; }
+
+  if (scrolling) { setState("paper"); return; }
+  if (typing) { setState(Math.floor(now / 250) % 2 ? "kneadR" : "kneadL"); return; }
+  if (huntReady) { setState("hunt"); cat.target = { x: mouse.x, y: mouse.y }; return; }
+
+  // hover -> purr after 500ms
+  if (hovering) { if (cat.hoverStart < 0) cat.hoverStart = now; if (now - cat.hoverStart > 500) { setState("purr"); emitHearts(); return; } }
+  else cat.hoverStart = -9999;
+
+  // walk to cursor when far
+  if (farFromCursor > 80) { setState("walk"); cat.target = { x: mouse.x, y: mouse.y }; return; }
+
+  // reached -> idle (+ random blink / idle-life)
+  if (cat.state === "walk" && farFromCursor <= 20) settleToIdle();
+  if (!["idle", "blink"].includes(cat.state)) setState("idle");
+
+  // random blink
+  if (now - cat.lastBlink > cat.nextBlink) { cat.lastBlink = now; cat.nextBlink = 3000 + Math.random() * 3000; setState("blink", { lockMs: 200, onDone: () => setState("idle", { force: true }) }); }
+
+  // stretch reminder
+  if (cat.stretchMin > 0 && now - cat.lastStretch > cat.stretchMin * 60000) { cat.lastStretch = now; doStretch(); }
+}
+
+// ============================================================================
+//  PHYSICS  (movement + drag stretch + throw)
+// ============================================================================
+function physics(dt) {
+  cat.sx = 1; cat.sy = 1; cat.rot = 0;
+
+  if (cat.dragging) {
+    // head/top follows cursor; body stretches with drag distance (mochi)
+    cat.pos.x = lerp(cat.pos.x, cat.target.x, 0.5);
+    cat.pos.y = lerp(cat.pos.y, cat.target.y, 0.5);
+    const stretch = clamp((cat.target.y - cat.pos.y) * -0.004 + 0.0, 0, 0); // base
+    const drop = Math.abs(cat.vel.y);
+    cat.sy = clamp(1 + (Math.abs(cat.target.y - cat.pos.y)) / 120, 1, 2.5);
+    cat.sx = clamp(2 - cat.sy * 0.6, 0.6, 1);
+    if (cat.state === "wiggle") cat.rot = Math.sin(now * 0.04) * 12 * Math.PI / 180;
+    return;
+  }
+
+  if (cat.state === "wiggle") {
+    // shake decay after release
+    const k = clamp((cat.lockUntil - now) / 400, 0, 1);
+    cat.rot = Math.sin(now * 0.04) * 15 * k * Math.PI / 180;
+  }
+
+  // throw / fling: ballistic with friction until slow, then settle
+  if (Math.hypot(cat.vel.x, cat.vel.y) > 40 && !["walk", "hunt"].includes(cat.state)) {
+    cat.pos.x += cat.vel.x * dt; cat.pos.y += cat.vel.y * dt;
+    cat.vel.x *= Math.pow(0.12, dt); cat.vel.y *= Math.pow(0.12, dt);
+    cat.pos.x = clamp(cat.pos.x, 40, innerWidth - 40);
+    cat.pos.y = clamp(cat.pos.y, 60, innerHeight - 10);
+    cat.target = { ...cat.pos };
+  } else {
+    cat.vel.x = 0; cat.vel.y = 0;
+  }
+
+  // walk / hunt: lerp toward target
+  if (cat.state === "walk" || cat.state === "hunt") {
+    const k = cat.state === "hunt" ? 0.18 : 0.08;
+    cat.pos.x = lerp(cat.pos.x, cat.target.x, k);
+    cat.pos.y = lerp(cat.pos.y, cat.target.y, k);
+    cat.faceLeft = cat.target.x < cat.pos.x - 1;
+    cat.pos.y += Math.sin(now * 0.02) * (cat.state === "hunt" ? 1 : 2) * 0; // bob handled visually
+    if (cat.state === "hunt") cat.sy = 0.9;
+  }
+
+  // walking bob (visual)
+  if (cat.state === "walk") cat.bob = Math.sin(now * 0.02) * 2; else cat.bob = 0;
+
+  // peek: park near bottom edge, only top half visible
+  if (cat.peek && !["drag", "jump"].includes(cat.state)) {
+    cat.target.y = innerHeight + GRID * SCALE * 0.5;
+    cat.pos.y = lerp(cat.pos.y, cat.target.y, 0.06);
+  }
+
+  // stretch visual: scaleY 1 -> 2.5 -> 1 across frames
+  if (cat.state === "stretch") {
+    const t = cat.frame / (A.stretch.frames.length - 1);
+    cat.sy = 1 + Math.sin(t * Math.PI) * 1.5;     // up to ~2.5
+    cat.sx = 1 - Math.sin(t * Math.PI) * 0.25;
+  }
+  // jump visual arc
+  if (cat.state === "jump") {
+    const t = cat.frame / (A.jump.frames.length - 1);
+    cat.jumpY = -Math.sin(t * Math.PI) * 80;
+    if (cat.frame <= 0 || cat.frame >= 4) { cat.sy = 0.8; cat.sx = 1.2; } // crouch/land squash
+  } else cat.jumpY = 0;
+}
+
+// ============================================================================
+//  PARTICLES
+// ============================================================================
+function emitSteam() {
+  if (particles.filter(p => p.k === "steam").length >= 8) return;
+  if (now - (cat._lastSteam || 0) < 200) return; cat._lastSteam = now;
+  const c = catCenter();
+  particles.push({ k: "steam", x: c.x + (Math.random() - .5) * 20, y: c.y - 40, vx: (Math.random() - .5) * 12, vy: -34, life: 0, max: 1200 });
+}
+function emitHearts() {
+  if (now - (cat._lastHeart || 0) < 350) return; cat._lastHeart = now;
+  const c = catCenter();
+  particles.push({ k: "heart", x: c.x + (Math.random() - .5) * 16, y: c.y - 30, vx: (Math.random() - .5) * 14, vy: -28, life: 0, max: 1500 });
+}
+function burstStars() {
+  const c = catCenter(); const cols = ["#f7d36b", "#f0708c", "#7cc4d6", "#a6e3a1"];
+  for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2; particles.push({ k: "star", x: c.x, y: cat.pos.y, vx: Math.cos(a) * 120, vy: Math.sin(a) * 120 - 60, life: 0, max: 800, col: cols[i % cols.length], grav: true }); }
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i]; p.life += dt * 1000;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.grav) p.vy += 18; else if (p.k === "steam") { p.vx += Math.sin(p.life * 0.01) * 4 * dt; }
+    if (p.life >= p.max) particles.splice(i, 1);
+  }
+}
+function drawParticles() {
+  for (const p of particles) {
+    const a = 1 - p.life / p.max;
+    ctx.globalAlpha = clamp(a, 0, 1);
+    if (p.k === "steam") { ctx.fillStyle = C.steam; const s = 2 * SCALE * 0.5; ctx.fillRect(p.x, p.y, s, s); }
+    else if (p.k === "heart") { ctx.fillStyle = C.heart; drawHeart(p.x, p.y, 1 + (p.life / p.max) * 0.6); }
+    else if (p.k === "star") { ctx.fillStyle = p.col; drawStar(p.x, p.y); }
+  }
+  ctx.globalAlpha = 1;
+}
+function drawHeart(x, y, s) { const u = 2 * s; ctx.fillRect(x, y, u, u); ctx.fillRect(x + u * 1.5, y, u, u); ctx.fillRect(x - u * .5, y + u, u * 3, u); ctx.fillRect(x, y + u * 2, u * 2, u); }
+function drawStar(x, y) { const u = 3; ctx.fillRect(x - u, y, u * 3, u); ctx.fillRect(x, y - u, u, u * 3); }
+
+// ============================================================================
+//  EYE TRACKING (pupils on stage)
+// ============================================================================
+function drawPupils() {
+  const squint = ["purr", "overheat", "stretch"].includes(cat.state) || (cat.state === "idle" && cat.frame === 3) || cat.state === "blink";
+  if (squint || cat.rot !== 0) return;
+  ctx.fillStyle = C.eye;
+  for (const e of EYES) {
+    const ewx = cat.pos.x + (e.x - FOOT.x) * SCALE * cat.sx * (cat.faceLeft ? -1 : 1);
+    const ewy = (cat.pos.y + (cat.jumpY || 0)) + (e.y - FOOT.y) * SCALE * cat.sy;
+    let dx = mouse.x - ewx, dy = mouse.y - ewy; const L = Math.hypot(dx, dy) || 1;
+    const off = Math.min(1, L / 200) * 2;               // max 2px (sprite) offset
+    const ox = (dx / L) * off * SCALE, oy = (dy / L) * off * SCALE;
+    ctx.fillRect(Math.round(ewx + ox - SCALE), Math.round(ewy + oy - SCALE), 2 * SCALE, 2 * SCALE);
+  }
+}
+
+// ============================================================================
+//  RENDER
+// ============================================================================
+function render() {
+  ctx.clearRect(0, 0, stage.width, stage.height);
+
+  // red tint only for overheat
+  const red = cat.state === "overheat";
+  const def = A[cat.state] || A.idle;
+  const frame = def.frames[clamp(cat.frame, 0, def.frames.length - 1)];
+  const sprite = buildSprite(frame, cat.fur, red);
+
+  const drawY = cat.pos.y + (cat.jumpY || 0) + (cat.bob || 0);
+  ctx.save();
+  ctx.translate(cat.pos.x, drawY);
+  if (cat.rot) ctx.rotate(cat.rot);
+  ctx.scale((cat.faceLeft ? -1 : 1) * cat.sx, cat.sy);
+  // anchor foot at origin
+  ctx.drawImage(sprite, -FOOT.x * SCALE, -FOOT.y * SCALE, GRID * SCALE, GRID * SCALE);
+  ctx.restore();
+
+  drawPupils();
+  drawParticles();
+  drawBubbles();
+}
+
+// think "..." bubble + meow bubble are DOM; positioned each frame
+let bubbleEl = null;
+function showBubble(text, clickable) { hideBubble(); bubbleEl = document.createElement("div"); bubbleEl.className = "bubble" + (clickable ? " click" : ""); bubbleEl.textContent = text; if (clickable) bubbleEl.onclick = () => { hideBubble(); settleToIdle(); }; document.body.appendChild(bubbleEl); }
+function hideBubble() { if (bubbleEl) { bubbleEl.remove(); bubbleEl = null; } }
+function drawBubbles() {
+  if (cat.state === "think" && !bubbleEl) showBubble("...", false);
+  if (cat.state !== "think" && cat.state !== "meow" && bubbleEl && !bubbleEl.classList.contains("click")) hideBubble();
+  if (bubbleEl) { const c = catCenter(); bubbleEl.style.left = c.x + "px"; bubbleEl.style.top = (c.y - 26 * SCALE * cat.sy * 0.3 - 10) + "px"; }
+}
+
+// ============================================================================
+//  MAIN LOOP
+// ============================================================================
+function frameStep(t) {
+  const dt = Math.min(0.05, (t - now) / 1000); now = t;
+  updateMouse(dt);
+  brain(dt);
+  physics(dt);
+  // advance animation frame at per-state fps
+  const def = A[cat.state] || A.idle;
+  if (now - cat.lastFrameT >= 1000 / def.fps) {
+    cat.lastFrameT = now;
+    if (cat.frame >= def.frames.length - 1) {
+      if (def.loop) cat.frame = 0;
+      else { const done = cat.onDone; if (!locked()) { /* wait for lock */ } if (now >= cat.lockUntil) { cat.onDone = null; done && done(); } }
+    } else cat.frame++;
+  }
+  // fire onDone for one-shots when lock elapses
+  if (!def.loop && now >= cat.lockUntil && cat.onDone) { const d = cat.onDone; cat.onDone = null; d(); }
+
+  cat.stateT += dt * 1000;
+  updateParticles(dt);
+  render();
+  requestAnimationFrame(frameStep);
+}
+requestAnimationFrame(frameStep);
+
+// ============================================================================
+//  UI  (control bar + settings panel)
+// ============================================================================
+document.getElementById("bar").addEventListener("click", (e) => {
+  const act = e.target.dataset.act; if (!act) return;
+  if (act === "think") { cat.thinking ? finishThink() : think(); }
+  else if (act === "jump") doJump();
+  else if (act === "stretch") doStretch();
+  else if (act === "meow") doMeow();
+  else if (act === "peek") togglePeek();
+  else if (act === "settings") openPanel(innerWidth / 2 - 125, 80);
+});
+
+const panel = document.getElementById("panel");
+function openPanel(x, y) { panel.style.display = "block"; panel.style.left = clamp(x, 8, innerWidth - 260) + "px"; panel.style.top = clamp(y, 8, innerHeight - 320) + "px"; }
+document.getElementById("panelClose").onclick = () => panel.style.display = "none";
+addEventListener("keydown", (e) => { if (e.key === "Escape") panel.style.display = "none"; });
+addEventListener("mousedown", (e) => { if (panel.style.display === "block" && !panel.contains(e.target) && !overCat(e.clientX, e.clientY)) panel.style.display = "none"; });
+
+const swWrap = document.getElementById("swatches");
+const SW = { grey: "#7cc4d6", orange: "#f7aa46", black: "#4a4660", white: "#dfe8ec", calico: "#f7965a", pink: "#f796c8" };
+Object.keys(FUR).forEach((k) => {
+  const d = document.createElement("div"); d.className = "sw" + (k === "grey" ? " active" : ""); d.style.background = SW[k]; d.title = k;
+  d.onclick = () => { cat.fur = FUR[k]; document.querySelectorAll(".sw").forEach(s => s.classList.remove("active")); d.classList.add("active"); };
+  swWrap.appendChild(d);
+});
+document.getElementById("catName").oninput = (e) => cat.name = e.target.value || "Pao";
+document.getElementById("strInterval").oninput = (e) => { cat.stretchMin = +e.target.value; document.getElementById("strVal").textContent = e.target.value; };
+document.getElementById("peekToggle").onchange = (e) => cat.peek = e.target.checked;
+document.getElementById("soundToggle").onchange = (e) => { cat.sound = e.target.checked; if (cat.sound) initAudio(); };
+document.getElementById("pomo").oninput = (e) => document.getElementById("pomoVal").textContent = e.target.value;
+
+// ============================================================================
+//  AUDIO (tiny WebAudio synth; optional)
+// ============================================================================
+let actx = null;
+function initAudio() { if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); }
+function beep(freq, dur, type = "square", gain = 0.04) {
+  if (!cat.sound || !actx) return;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.value = freq; g.gain.value = gain;
+  o.connect(g); g.connect(actx.destination); o.start();
+  g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+  o.stop(actx.currentTime + dur);
+}
+// expose a tiny external API (THINK hook etc.)
+window.pao = { think, finishThink, jump: doJump, stretch: doStretch, meow: doMeow, peek: togglePeek };
+</script>
+</body>
+</html>
