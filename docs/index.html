@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pao — a desktop pixel cat that reacts to how you work</title>
+<meta name="description" content="Pao is a cozy pixel-cat companion that lives on your desktop. Free, local-only, no AI, no tracking." />
+<link rel="icon" href="icon.png" />
+<style>
+  :root {
+    --bg: #faf7fb;
+    --fg: #241c2c;
+    --muted: #6b5f76;
+    --card: #ffffff;
+    --border: #e9e2ee;
+    --accent: #d856c4;
+    --accent-2: #fa98b2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1420; --fg: #f3eef7; --muted: #ab9fb8; --card: #251d2d; --border: #3a2f45; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 64px 24px 96px; }
+  .hero { text-align: center; margin-bottom: 48px; }
+  .hero img { width: 96px; height: 96px; image-rendering: pixelated; margin-bottom: 16px; }
+  h1 { font-size: 2rem; margin: 0 0 12px; }
+  .sub { color: var(--muted); font-size: 1.05rem; max-width: 480px; margin: 0 auto 32px; }
+  .badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px; font-size: 0.85rem; color: var(--muted); }
+  .badges span { border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; }
+
+  .download-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(90deg, var(--accent-2), var(--accent));
+    color: white;
+    font-weight: 600;
+    font-size: 1.05rem;
+    padding: 14px 28px;
+    border-radius: 12px;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+  }
+  .btn:disabled { opacity: 0.6; cursor: default; }
+  .alt-links { margin-top: 14px; font-size: 0.9rem; }
+  .alt-links a { color: var(--muted); margin: 0 8px; }
+  .status { font-size: 0.85rem; color: var(--muted); margin-top: 10px; min-height: 1.2em; }
+
+  details {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 18px;
+    margin-bottom: 12px;
+  }
+  summary { cursor: pointer; font-weight: 600; }
+  details p, details ol { color: var(--muted); font-size: 0.95rem; }
+  details ol { padding-left: 20px; }
+  details kbd {
+    background: var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85em;
+  }
+
+  footer { text-align: center; margin-top: 48px; color: var(--muted); font-size: 0.85rem; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <img src="icon.png" alt="Pao" />
+      <h1>Pao</h1>
+      <p class="sub">A cozy pixel cat that lives on your desktop and reacts to how you work — kneads while you type, chases your cursor, purrs when you pet it. Runs entirely on your machine.</p>
+      <div class="badges">
+        <span>Free</span>
+        <span>No account</span>
+        <span>Runs 100% locally — no AI, no tracking</span>
+      </div>
+    </div>
+
+    <div class="download-card">
+      <button class="btn" id="primaryBtn" disabled>Checking latest release…</button>
+      <div class="status" id="status"></div>
+      <div class="alt-links" id="altLinks"></div>
+    </div>
+
+    <details id="macHelp" style="display:none;">
+      <summary>First time opening on Mac? (one-time step)</summary>
+      <p>Pao isn't notarized by Apple yet, so macOS will warn you the first time. This is expected — here's how to open it:</p>
+      <ol>
+        <li>Unzip / mount the download, then <strong>right-click</strong> (or <kbd>Control</kbd>-click) the Pao app icon.</li>
+        <li>Choose <strong>Open</strong> from the menu.</li>
+        <li>Click <strong>Open</strong> again in the dialog that appears.</li>
+      </ol>
+      <p>You only need to do this once — after that it opens normally.</p>
+    </details>
+
+    <details id="winHelp" style="display:none;">
+      <summary>First time opening on Windows? (one-time step)</summary>
+      <p>Pao isn't code-signed yet, so Windows SmartScreen may warn you. Here's how to continue:</p>
+      <ol>
+        <li>Click <strong>More info</strong> on the SmartScreen popup.</li>
+        <li>Click <strong>Run anyway</strong>.</li>
+      </ol>
+    </details>
+
+    <footer>
+      <a href="https://github.com/P1YUSH4/Popcat" target="_blank" rel="noopener">Source on GitHub</a>
+      · <a href="https://github.com/P1YUSH4/Popcat/releases" target="_blank" rel="noopener">All releases</a>
+    </footer>
+  </div>
+
+  <script>
+    const REPO = "P1YUSH4/Popcat";
+
+    function detectOS() {
+      const ua = navigator.userAgent;
+      if (/Mac/i.test(ua)) return "mac";
+      if (/Win/i.test(ua)) return "win";
+      return "other";
+    }
+
+    function pick(assets, patterns) {
+      for (const p of patterns) {
+        const hit = assets.find(a => p.test(a.name));
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    async function load() {
+      const btn = document.getElementById("primaryBtn");
+      const status = document.getElementById("status");
+      const altLinks = document.getElementById("altLinks");
+      const os = detectOS();
+
+      try {
+        const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+        if (!res.ok) throw new Error("release fetch failed: " + res.status);
+        const rel = await res.json();
+        const assets = rel.assets || [];
+
+        const macArm = pick(assets, [/arm64.*\.dmg$/i]);
+        const macIntel = pick(assets, [/x64.*\.dmg$/i, /(?<!arm)64.*\.dmg$/i]);
+        const macZip = pick(assets, [/\.zip$/i]);
+        const win = pick(assets, [/\.exe$/i]);
+
+        let primary = null;
+        let label = "Download";
+
+        if (os === "mac") {
+          primary = macArm || macIntel || macZip;
+          label = macArm ? "Download for Mac (Apple Silicon)" : "Download for Mac";
+          document.getElementById("macHelp").style.display = "block";
+        } else if (os === "win") {
+          primary = win;
+          label = "Download for Windows";
+          document.getElementById("winHelp").style.display = "block";
+        } else {
+          primary = macArm || win;
+          label = "Download";
+        }
+
+        if (primary) {
+          btn.textContent = label;
+          btn.disabled = false;
+          btn.onclick = () => window.location.href = primary.browser_download_url;
+        } else {
+          btn.textContent = "No build found for your OS";
+        }
+
+        status.textContent = `Latest version: ${rel.tag_name}`;
+
+        const links = [];
+        if (os !== "mac" && (macArm || macIntel)) links.push(`<a href="${(macArm||macIntel).browser_download_url}">Mac</a>`);
+        if (macIntel && os === "mac" && macArm) links.push(`<a href="${macIntel.browser_download_url}">Intel Mac</a>`);
+        if (os !== "win" && win) links.push(`<a href="${win.browser_download_url}">Windows</a>`);
+        altLinks.innerHTML = links.length ? "Other platforms: " + links.join(" · ") : "";
+      } catch (err) {
+        btn.textContent = "Download from GitHub Releases";
+        btn.disabled = false;
+        btn.onclick = () => window.location.href = `https://github.com/${REPO}/releases/latest`;
+        status.textContent = "";
+        if (os === "mac") document.getElementById("macHelp").style.display = "block";
+        if (os === "win") document.getElementById("winHelp").style.display = "block";
+      }
+    }
+
+    load();
+  </script>
+</body>
+</html>

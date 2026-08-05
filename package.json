@@ -1,6 +1,6 @@
 {
   "name": "pao-companion",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "An original desktop pixel companion (Comnyang-inspired) built with Electron + TypeScript + Canvas.",
   "main": "dist/main.js",
   "bin": {
@@ -44,7 +44,9 @@
         { "target": "dmg", "arch": ["arm64", "x64"] },
         { "target": "zip", "arch": ["arm64", "x64"] }
       ]
-    }
+    },
+    "linux": { "target": ["AppImage"] },
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true }
   },
   "devDependencies": {
     "electron": "^31.0.0",
@@ -55,16 +57,5 @@
   "optionalDependencies": {
     "get-windows": "^9.2.0",
     "uiohook-napi": "^1.5.4"
-  },
-  "build": {
-    "appId": "com.pao.companion",
-    "productName": "Pao",
-    "directories": { "output": "release" },
-    "files": ["dist/**/*", "package.json"],
-    "asar": false,
-    "win": { "target": ["nsis", "portable"], "icon": "assets/icon.png" },
-    "mac": { "target": ["dmg", "zip"], "icon": "assets/icon.png", "category": "public.app-category.entertainment" },
-    "linux": { "target": ["AppImage"] },
-    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true }
   }
 }
